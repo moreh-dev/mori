@@ -84,33 +84,53 @@ void Context::InitializePossibleTransports() {
   }
 
   // Match gpu and nic
+  const char* linearTopo = std::getenv("MORI_LINEAR_TOPO");
   const char* disableTopo = std::getenv("MORI_DISABLE_TOPO");
   int portId = -1;
   int devicePortId = -1;
   RdmaDevice* device = nullptr;
 
-  if (disableTopo) {
-    std::cout << "MORI Topology detection is disabled, use static matching" << std::endl;
+  int gpuCount;
+  HIP_RUNTIME_CHECK(hipGetDeviceCount(&gpuCount));
+  int nicCount = activeDevicePortList.size();
+
+  if (linearTopo && gpuCount > nicCount) {
     if (!activeDevicePortList.empty()) {
-      devicePortId = (rankInNode % activeDevicePortList.size());
+      int groupSize = gpuCount / nicCount;
+      if (gpuCount < nicCount) {
+        devicePortId = rankInNode;
+      } else {
+        devicePortId = rankInNode / groupSize;
+      }
       device = activeDevicePortList[devicePortId].first;
       portId = activeDevicePortList[devicePortId].second;
       rdmaDeviceContext.reset(device->CreateRdmaDeviceContext());
     }
-  } else {
-    int deviceId = -1;
-    HIP_RUNTIME_CHECK(hipGetDevice(&deviceId));
-    topo.reset(new TopoSystem());
-    std::string nicName = topo->MatchGpuAndNic(deviceId);
+  }
+  else {
+    if (disableTopo) {
+      std::cout << "MORI Topology detection is disabled, use static matching" << std::endl;
+      if (!activeDevicePortList.empty()) {
+        devicePortId = (rankInNode % activeDevicePortList.size());
+        device = activeDevicePortList[devicePortId].first;
+        portId = activeDevicePortList[devicePortId].second;
+        rdmaDeviceContext.reset(device->CreateRdmaDeviceContext());
+      }
+    } else {
+      int deviceId = -1;
+      HIP_RUNTIME_CHECK(hipGetDevice(&deviceId));
+      topo.reset(new TopoSystem());
+      std::string nicName = topo->MatchGpuAndNic(deviceId);
 
-    for (int i = 0; i < activeDevicePortList.size(); i++) {
-      auto& dp = activeDevicePortList[i];
-      if (dp.first->Name() != nicName) continue;
-      device = dp.first;
-      portId = activeDevicePortList[i].second;
-      rdmaDeviceContext.reset(device->CreateRdmaDeviceContext());
-      devicePortId = i;
-      break;
+      for (int i = 0; i < activeDevicePortList.size(); i++) {
+        auto& dp = activeDevicePortList[i];
+        if (dp.first->Name() != nicName) continue;
+        device = dp.first;
+        portId = activeDevicePortList[i].second;
+        rdmaDeviceContext.reset(device->CreateRdmaDeviceContext());
+        devicePortId = i;
+        break;
+      }
     }
   }
 
