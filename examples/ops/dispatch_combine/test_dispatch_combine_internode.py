@@ -386,7 +386,9 @@ class EpDispatchCombineTestCase:
 
         element_size = all_rank_input[self.rank].element_size()
         total_bytes = total_recv_num_token * self.config.hidden_dim * element_size
-        disp_bandwidth = total_bytes / (1000**3) / (disp_duration / (10**3))
+#        total_bytes_world = total_bytes / (1000**2) * self.world_size
+#        print(f"estimated total bytes = {total_bytes_world} MB")
+        disp_bandwidth = total_bytes / (1000**2) / (disp_duration / (10**3))
 
         torch.cuda.synchronize()
         dist.barrier()
@@ -400,8 +402,9 @@ class EpDispatchCombineTestCase:
         end_event.record()
         torch.cuda.synchronize()
         comb_duration = start_event.elapsed_time(end_event)
-        comb_bandwidth = total_bytes / (1000**3) / (comb_duration / (10**3))
+        comb_bandwidth = total_bytes / (1000**2) / (comb_duration / (10**3))
 
+        self.total_bytes_MB = total_bytes / (1000**2)
 
         op.reset()
         torch.cuda.synchronize()
@@ -455,36 +458,40 @@ class EpDispatchCombineTestCase:
             dist.all_gather(disp_comm_duration_output, torch.tensor([disp_comm_duration]))
             dist.all_gather(comb_comm_duration_output, torch.tensor([comb_comm_duration]))
 
-            disp_duration_us_list.append([int(t.item()) for t in disp_duration_output])
-            disp_bandwidth_GB_list.append([int(t.item()) for t in disp_bandwidth_output])
-            comb_duration_us_list.append([int(t.item()) for t in comb_duration_output])
-            comb_bandwidth_GB_list.append([int(t.item()) for t in comb_bandwidth_output])
-            disp_comm_duration_list.append([int(t.item()) for t in disp_comm_duration_output])
-            comb_comm_duration_list.append([int(t.item()) for t in comb_comm_duration_output])
+            disp_duration_us_list.append([(t.item()) for t in disp_duration_output])
+            disp_bandwidth_GB_list.append([(t.item()) for t in disp_bandwidth_output])
+            comb_duration_us_list.append([(t.item()) for t in comb_duration_output])
+            comb_bandwidth_GB_list.append([(t.item()) for t in comb_bandwidth_output])
+            disp_comm_duration_list.append([(t.item()) for t in disp_comm_duration_output])
+            comb_comm_duration_list.append([(t.item()) for t in comb_comm_duration_output])
 
         if self.rank == 0:
             for i in range(len(disp_duration_us_list)):
+                disp_bandwidth_GB_list_formatted = ", ".join(f"{x:9.2f}" for x in disp_bandwidth_GB_list[i])
+                disp_duration_us_list_formatted = ", ".join(f"{x:9.2f}" for x in disp_duration_us_list[i])
+                disp_comm_duration_list_formatted = ", ".join(f"{x:9.2f}" for x in disp_comm_duration_list[i])
                 print(
-                    f"Round {i} dispatch duration {disp_duration_us_list[i]} "
-                    f"bandwidth {disp_bandwidth_GB_list[i]} "
-                    f"avg {sum(disp_duration_us_list[i]) / self.config.world_size:.2f} µs "
-                    f"avg {sum(disp_bandwidth_GB_list[i]) / self.config.world_size:.2f} GB/s"
-                )
-                print(
-                    f"Round {i} disp gpu rdma us {disp_comm_duration_list[i]} "
-                    f"avg {sum(disp_comm_duration_list[i]) / self.config.world_size:.2f} ns "
+                    f"Round {i} dispatch\n"
+                    f" bandwidth [{disp_bandwidth_GB_list_formatted}]"
+                    f" avg {sum(disp_bandwidth_GB_list[i]) / self.config.world_size:9.2f} GB/s\n"
+                    f" duration  [{disp_duration_us_list_formatted}]"
+                    f" avg {sum(disp_duration_us_list[i]) / self.config.world_size:9.2f} µs\n"
+                    f" gpu rdma  [{disp_comm_duration_list_formatted}]"
+                    f" avg {sum(disp_comm_duration_list[i]) / self.config.world_size:9.2f} µs "
                 )
 
             for i in range(len(comb_duration_us_list)):
+                comb_bandwidth_GB_list_formatted = ", ".join(f"{x:9.2f}" for x in comb_bandwidth_GB_list[i])
+                comb_duration_us_list_formatted = ", ".join(f"{x:9.2f}" for x in comb_duration_us_list[i])
+                comb_comm_duration_list_formatted = ", ".join(f"{x:9.2f}" for x in comb_comm_duration_list[i])
                 print(
-                    f"Round {i} combine  duration {comb_duration_us_list[i]} "
-                    f"bandwidth {comb_bandwidth_GB_list[i]} "
-                    f"avg {sum(comb_duration_us_list[i]) / self.config.world_size:.2f} µs "
-                    f"avg {sum(comb_bandwidth_GB_list[i]) / self.config.world_size:.2f} GB/s"
-                )
-                print(
-                    f"Round{i} comb  gpu rdma us {comb_comm_duration_list[i]} "
-                    f"avg {sum(comb_comm_duration_list[i]) / self.config.world_size:.2f} ns"
+                    f"Round {i} combine\n"
+                    f" bandwidth [{comb_bandwidth_GB_list_formatted}]"
+                    f" avg {sum(comb_bandwidth_GB_list[i]) / self.config.world_size:9.2f} GB/s\n"
+                    f" duration  [{comb_duration_us_list_formatted}]"
+                    f" avg {sum(comb_duration_us_list[i]) / self.config.world_size:9.2f} µs\n"
+                    f" gpu rdma  [{comb_comm_duration_list_formatted}]"
+                    f" avg {sum(comb_comm_duration_list[i]) / self.config.world_size:9.2f} µs"
                 )
 
         disp_bandwidth_GB_list = disp_bandwidth_GB_list[0:]
@@ -538,12 +545,13 @@ class EpDispatchCombineTestCase:
 
         if self.rank == 0:
             print(
-                f"dispatch: best/avg bandwidth {best_disp_bw:.2f} / {avg_disp_bw:.2f} GB/s | "
-                f"best/avg latency {best_disp_lat:.2f} / {avg_disp_lat:.2f} µs | "
-                f"best/avg comm duration {best_disp_comm:.2f} / {avg_disp_comm:.2f} ns\n"
-                f"combine : best/avg bandwidth {best_comb_bw:.2f} / {avg_comb_bw:.2f} GB/s | "
-                f"best/avg latency {best_comb_lat:.2f} / {avg_comb_lat:.2f} µs | "
-                f"best/avg comm duration {best_comb_comm:.2f} / {avg_comb_comm:.2f} ns\n"
+                f"total MB: {self.total_bytes_MB:9.2f} MB/s\n"
+                f"dispatch: best/avg bandwidth {best_disp_bw:9.2f} / {avg_disp_bw:9.2f} GB/s | "
+                f"best/avg latency {best_disp_lat:9.2f} / {avg_disp_lat:9.2f} µs | "
+                f"best/avg comm duration {best_disp_comm:9.2f} / {avg_disp_comm:9.2f} µs\n"
+                f"combine : best/avg bandwidth {best_comb_bw:9.2f} / {avg_comb_bw:9.2f} GB/s | "
+                f"best/avg latency {best_comb_lat:9.2f} / {avg_comb_lat:9.2f} µs | "
+                f"best/avg comm duration {best_comb_comm:9.2f} / {avg_comb_comm:9.2f} µs\n"
             )
         del op
 

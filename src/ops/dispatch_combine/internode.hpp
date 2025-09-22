@@ -281,7 +281,7 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float c
   if (globalThdId  == 0) {
     clock_t end_time = clock();
     clock_t duration_ticks = end_time - start_time;
-    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000000.0f;
+    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000.0f;
 
     args.dispCommDuration[0] = duration_ns;
   }
@@ -511,7 +511,7 @@ __global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float cl
   if (globalThdId  == 0) {
     clock_t end_time = clock();
     clock_t duration_ticks = end_time - start_time;
-    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000000.0f;
+    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000.0f;
 
     args.combCommDuration[0] = duration_ns;
   }
