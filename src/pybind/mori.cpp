@@ -44,7 +44,7 @@
 namespace {
 
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<torch::Tensor>, torch::Tensor,
-           torch::Tensor>
+           torch::Tensor, torch::Tensor>
 LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
                const torch::Tensor& input, const std::optional<torch::Tensor>& weights,
                const std::optional<torch::Tensor>& scales, const torch::Tensor& topkIds,
@@ -102,12 +102,18 @@ LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
                        torch::TensorOptions()
                            .dtype(mori::GetTorchDataType<mori::moe::index_t>())
                            .device(torch::kCUDA));
-  return {out, outWeights, outScales, outIndices, totalRecvTokenNum};
+
+  torch::Tensor commDuration =
+      torch::from_blob(handle.dispCommDuration, {1},
+                       torch::TensorOptions()
+                           .dtype(mori::GetTorchDataType<float>())
+                           .device(torch::kCUDA));
+  return {out, outWeights, outScales, outIndices, totalRecvTokenNum, commDuration};
 }
 
 // TODO: translate data type
 // template <typename T>
-std::tuple<torch::Tensor, std::optional<torch::Tensor>> LaunchCombine(
+std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor> LaunchCombine(
     mori::moe::EpDispatchCombineHandle& handle, int kernelType, const torch::Tensor& input,
     const std::optional<torch::Tensor>& weights, const torch::Tensor& topkIds, int blockNum,
     int warpPerBlock) {
@@ -138,7 +144,13 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> LaunchCombine(
                          torch::TensorOptions().dtype(weights->scalar_type()).device(torch::kCUDA));
   }
 
-  return {out, outWeights};
+  torch::Tensor commDuration =
+      torch::from_blob(handle.combCommDuration, {1},
+                       torch::TensorOptions()
+                           .dtype(mori::GetTorchDataType<float>())
+                           .device(torch::kCUDA));
+
+  return {out, outWeights, commDuration};
 }
 
 void LaunchReset(mori::moe::EpDispatchCombineHandle& handle) {

@@ -47,7 +47,7 @@ __device__ void SyncIfDebugEnabled(const char* msg) {
 /*                                    EpDispatchInterNodeKernel                                   */
 /* ---------------------------------------------------------------------------------------------- */
 template <typename T>
-__global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args) {
+__global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float clockRateInKHz) {
   const EpDispatchCombineConfig& config = args.config;
 
   int thdId = threadIdx.x;
@@ -265,6 +265,8 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args) {
                          __HIP_MEMORY_SCOPE_AGENT);
     }
   }
+  clock_t start_time = 0;
+  if (globalThdId  == 0) { start_time = clock(); }
   if (thdId == 0) {
     index_t* signal = args.recvTokenNumMemObj->template GetAs<index_t*>() + destPe +
                       (args.crossDeviceBarrierFlag & 1) * npes;
@@ -275,6 +277,13 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args) {
     }
     // if (localBlockId == 0) printf("rank[%d] destPe[%d] recvTokenNum: %d\n", myPe, destPe,
     // recvTokenNum);
+  }
+  if (globalThdId  == 0) {
+    clock_t end_time = clock();
+    clock_t duration_ticks = end_time - start_time;
+    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000000.0f;
+
+    args.dispCommDuration[0] = duration_ns;
   }
   __syncthreads();
 
@@ -363,7 +372,7 @@ inline __device__ void CrossDeviceBarrierInterNodeKernel(EpDispatchCombineArgs<T
 /*                                    EpCombineInterNodeKernel                                    */
 /* ---------------------------------------------------------------------------------------------- */
 template <typename T>
-__global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args) {
+__global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float clockRateInKHz) {
   const EpDispatchCombineConfig& config = args.config;
   int thdId = threadIdx.x;
   int thdNum = blockDim.x;
@@ -492,9 +501,21 @@ __global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args) {
   }
   SyncIfDebugEnabled("Combine kernel: send token end");
 
+  clock_t start_time = 0;
+  if (globalThdId  == 0) { start_time = clock(); }
+
   // Make sure copy on all GPUs are finished
   CrossDeviceBarrierInterNodeKernel(args);
   shmem::ShmemQuietThread();
+
+  if (globalThdId  == 0) {
+    clock_t end_time = clock();
+    clock_t duration_ticks = end_time - start_time;
+    float duration_ns = (float)duration_ticks / clockRateInKHz * 1000000.0f;
+
+    args.combCommDuration[0] = duration_ns;
+  }
+
   if (globalThdId < npes) {
     args.recvTokenNumMemObj
         ->template GetAs<index_t*>()[globalThdId + (args.crossDeviceBarrierFlag & 1) * npes] = 0;

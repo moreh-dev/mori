@@ -163,6 +163,11 @@ void EpDispatchCombineHandle::InitializeBarrier() {
   HIP_RUNTIME_CHECK(hipMalloc(&combineGridBarrier, barrierSize));
   HIP_RUNTIME_CHECK(hipMemset(combineGridBarrier, 0, barrierSize));
   crossDeviceBarrierMemObj = ShmemMallocAndReturnMemObjPtr(barrierSize, hipDeviceMallocUncached);
+
+  HIP_RUNTIME_CHECK(hipMalloc(&dispCommDuration, sizeof(float)));
+  HIP_RUNTIME_CHECK(hipMemset(dispCommDuration, 0, sizeof(float)));
+  HIP_RUNTIME_CHECK(hipMalloc(&combCommDuration, sizeof(float)));
+  HIP_RUNTIME_CHECK(hipMemset(combCommDuration, 0, sizeof(float)));
 }
 
 void EpDispatchCombineHandle::FinalizeBarrier() {
@@ -197,6 +202,9 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
   dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
   dim3 block(warpSize * actualWarpNumPerBlock);
 
+  int clockRateInKHz;
+  HIP_RUNTIME_CHECK(hipDeviceGetAttribute(&clockRateInKHz, hipDeviceAttributeClockRate, 0)); 
+
   size_t sharedMemSize =
       (config.worldSize * actualWarpNumPerBlock + config.numExpertPerRank * actualWarpNumPerBlock +
        config.numExpertPerRank) *
@@ -209,7 +217,7 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
 
         if (kernelType == KernelType::InterNode) {
           assert(config.useExternalInpBuffer);
-          EpDispatchInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args);
+          EpDispatchInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, (float)clockRateInKHz);
         } else if (kernelType == KernelType::IntraNode) {
           EpDispatchIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
@@ -225,17 +233,21 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
   dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
   dim3 block(warpSize * actualWarpNumPerBlock);
 
+  int clockRateInKHz;
+  HIP_RUNTIME_CHECK(hipDeviceGetAttribute(&clockRateInKHz, hipDeviceAttributeClockRate, 0)); 
+
   auto argsVariant = GetEpDispatchCombineArgsByInputType(*this);
   std::visit(
       [&](auto&& args) {
         using ArgsT = std::decay_t<decltype(args)>;
         using DataT = typename ArgsT::data_type;
 
+
         size_t sharedMemSize =
             actualWarpNumPerBlock * config.numExpertPerToken * (sizeof(DataT**) + sizeof(float**));
         if (kernelType == KernelType::InterNode) {
           assert(config.useExternalInpBuffer);
-          EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args);
+          EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, (float)clockRateInKHz);
         } else if (kernelType == KernelType::IntraNode) {
           EpCombineIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
