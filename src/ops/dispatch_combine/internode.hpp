@@ -28,7 +28,7 @@
 namespace mori {
 namespace moe {
 
-#define MAX_GPUS_PER_NODE 8
+//#define MAX_GPUS_PER_NODE 8
 
 #define DEBUG 0
 
@@ -64,6 +64,7 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float c
 
   int myPe = config.rank;
   int npes = config.worldSize;
+  int MAX_GPUS_PER_NODE = npes / 2;
   int myNode = myPe / MAX_GPUS_PER_NODE;
 
   size_t MaxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
@@ -388,6 +389,7 @@ __global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float cl
 
   int myPe = config.rank;
   int npes = config.worldSize;
+  int MAX_GPUS_PER_NODE = npes / 2;
   int myNode = myPe / MAX_GPUS_PER_NODE;
 
   size_t MaxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
