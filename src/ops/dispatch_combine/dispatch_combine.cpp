@@ -205,6 +205,12 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
   int clockRateInKHz;
   HIP_RUNTIME_CHECK(hipDeviceGetAttribute(&clockRateInKHz, hipDeviceAttributeClockRate, 0)); 
 
+  int gpu_per_node = 8;
+  const char* str_gpu_per_node = std::getenv("GPU_PER_NODE");
+  if(str_gpu_per_node) {
+    gpu_per_node = std::stoi(str_gpu_per_node);
+  }
+
   size_t sharedMemSize =
       (config.worldSize * actualWarpNumPerBlock + config.numExpertPerRank * actualWarpNumPerBlock +
        config.numExpertPerRank) *
@@ -217,7 +223,7 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
 
         if (kernelType == KernelType::InterNode) {
           assert(config.useExternalInpBuffer);
-          EpDispatchInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, (float)clockRateInKHz);
+          EpDispatchInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz);
         } else if (kernelType == KernelType::IntraNode) {
           EpDispatchIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
@@ -236,6 +242,12 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
   int clockRateInKHz;
   HIP_RUNTIME_CHECK(hipDeviceGetAttribute(&clockRateInKHz, hipDeviceAttributeClockRate, 0)); 
 
+  int gpu_per_node = 8;
+  const char* str_gpu_per_node = std::getenv("GPU_PER_NODE");
+  if(str_gpu_per_node) {
+    gpu_per_node = std::stoi(str_gpu_per_node);
+  }
+
   auto argsVariant = GetEpDispatchCombineArgsByInputType(*this);
   std::visit(
       [&](auto&& args) {
@@ -247,7 +259,7 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
             actualWarpNumPerBlock * config.numExpertPerToken * (sizeof(DataT**) + sizeof(float**));
         if (kernelType == KernelType::InterNode) {
           assert(config.useExternalInpBuffer);
-          EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, (float)clockRateInKHz);
+          EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz);
         } else if (kernelType == KernelType::IntraNode) {
           EpCombineIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {

@@ -28,8 +28,6 @@
 namespace mori {
 namespace moe {
 
-//#define MAX_GPUS_PER_NODE 8
-
 #define DEBUG 0
 
 __device__ void SyncIfDebugEnabled(const char* msg) {
@@ -47,7 +45,7 @@ __device__ void SyncIfDebugEnabled(const char* msg) {
 /*                                    EpDispatchInterNodeKernel                                   */
 /* ---------------------------------------------------------------------------------------------- */
 template <typename T>
-__global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float clockRateInKHz) {
+__global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, int gpu_per_node, float clockRateInKHz) {
   const EpDispatchCombineConfig& config = args.config;
 
   int thdId = threadIdx.x;
@@ -64,8 +62,7 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float c
 
   int myPe = config.rank;
   int npes = config.worldSize;
-  int MAX_GPUS_PER_NODE = npes / 2;
-  int myNode = myPe / MAX_GPUS_PER_NODE;
+  int myNode = myPe / gpu_per_node;
 
   size_t MaxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
   size_t MaxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
@@ -130,7 +127,7 @@ __global__ void EpDispatchInterNodeKernel(EpDispatchCombineArgs<T> args, float c
   // TODO: block num should be multiple of npes
   const int numsBlockPerDestPe = gridDim.x / npes;
   const int destPe = blockIdx.x / numsBlockPerDestPe;
-  const int destNode = destPe / MAX_GPUS_PER_NODE;
+  const int destNode = destPe / gpu_per_node;
   const int localBlockId = blockIdx.x - destPe * numsBlockPerDestPe;
   const int totalTokens = args.destPeTokenCounter[destPe];
   const int baseChunk = totalTokens / numsBlockPerDestPe;
@@ -373,7 +370,7 @@ inline __device__ void CrossDeviceBarrierInterNodeKernel(EpDispatchCombineArgs<T
 /*                                    EpCombineInterNodeKernel                                    */
 /* ---------------------------------------------------------------------------------------------- */
 template <typename T>
-__global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float clockRateInKHz) {
+__global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, int gpu_per_node, float clockRateInKHz) {
   const EpDispatchCombineConfig& config = args.config;
   int thdId = threadIdx.x;
   int thdNum = blockDim.x;
@@ -389,8 +386,7 @@ __global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float cl
 
   int myPe = config.rank;
   int npes = config.worldSize;
-  int MAX_GPUS_PER_NODE = npes / 2;
-  int myNode = myPe / MAX_GPUS_PER_NODE;
+  int myNode = myPe / gpu_per_node;
 
   size_t MaxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
   size_t MaxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
@@ -400,7 +396,7 @@ __global__ void EpCombineInterNodeKernel(EpDispatchCombineArgs<T> args, float cl
   // source pe in pe sorted order
   const int numsBlockPerSrcPe = gridDim.x / npes;
   const int srcPe = blockIdx.x / numsBlockPerSrcPe;
-  const int srcNode = srcPe / MAX_GPUS_PER_NODE;
+  const int srcNode = srcPe / gpu_per_node;
   const int localBlockId = blockIdx.x - srcPe * numsBlockPerSrcPe;
   const int srcPeTokenNum = *(args.recvTokenNumMemObj->template GetAs<index_t*>() + srcPe +
                               (args.crossDeviceBarrierFlag & 1) * npes) -
