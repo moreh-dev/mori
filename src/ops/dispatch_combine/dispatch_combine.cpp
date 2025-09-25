@@ -234,7 +234,7 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
       argsVariant);
 }
 
-void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum, int warpPerBlock,
+void EpDispatchCombineHandle::LaunchCombineFirstHalf(KernelType kernelType, int blockNum, int warpPerBlock,
                                             hipStream_t stream) {
   size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
   dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
@@ -263,6 +263,41 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
 
           if(config.worldSize == 16 && gpu_per_node == 8) {
             EpCombineInterNodeKernelDivided<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz, 0);
+          }
+        } else {
+          assert(false);
+        }
+      },
+      argsVariant);
+}
+void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum, int warpPerBlock,
+                                            hipStream_t stream) {
+  size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
+  dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
+  dim3 block(warpSize * actualWarpNumPerBlock);
+
+  int clockRateInKHz;
+  HIP_RUNTIME_CHECK(hipDeviceGetAttribute(&clockRateInKHz, hipDeviceAttributeClockRate, 0));
+
+  int gpu_per_node = 8;
+  const char* str_gpu_per_node = std::getenv("GPU_PER_NODE");
+  if(str_gpu_per_node) {
+    gpu_per_node = std::stoi(str_gpu_per_node);
+  }
+
+  auto argsVariant = GetEpDispatchCombineArgsByInputType(*this);
+  std::visit(
+      [&](auto&& args) {
+        using ArgsT = std::decay_t<decltype(args)>;
+        using DataT = typename ArgsT::data_type;
+
+
+        size_t sharedMemSize =
+            actualWarpNumPerBlock * config.numExpertPerToken * (sizeof(DataT**) + sizeof(float**));
+        if (kernelType == KernelType::InterNode) {
+          assert(config.useExternalInpBuffer);
+
+          if(config.worldSize == 16 && gpu_per_node == 8) {
             EpCombineInterNodeKernelDivided<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz, 1);
             EpCombineInterNodeKernelFinalize<<<grid, block, sharedMemSize, stream>>>(args);
           } else {

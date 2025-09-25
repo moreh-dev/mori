@@ -111,6 +111,24 @@ LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
   return {out, outWeights, outScales, outIndices, totalRecvTokenNum, commDuration};
 }
 
+void LaunchCombineFirstHalf(
+    mori::moe::EpDispatchCombineHandle& handle, int kernelType, const torch::Tensor& input,
+    const std::optional<torch::Tensor>& weights, const torch::Tensor& topkIds, int blockNum,
+    int warpPerBlock) {
+  assert(input.is_contiguous() && topkIds.is_contiguous());
+
+  float* weightsPtr = nullptr;
+  if (weights.has_value() && weights->size(0) != 0) {
+    assert(weights->is_contiguous());
+    weightsPtr = weights->data_ptr<float>();
+  }
+
+  handle.PrepareInference(mori::ScalarTypeToHipDataType(input.scalar_type()), input.data_ptr(),
+                          nullptr, weightsPtr, topkIds.data_ptr<mori::moe::index_t>(),
+                          handle.curRankNumToken);
+  handle.LaunchCombineFirstHalf((mori::moe::KernelType)kernelType, blockNum, warpPerBlock,
+                       at::cuda::getCurrentHIPStream());
+}
 // TODO: translate data type
 // template <typename T>
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor> LaunchCombine(
@@ -202,6 +220,9 @@ void DeclareEpDispatchCombineHandle(pybind11::module& m) {
 
   std::string funcName = std::string("launch_dispatch");
   m.def(funcName.c_str(), &LaunchDispatch);
+
+  funcName = std::string("launch_combine_first_half");
+  m.def(funcName.c_str(), &LaunchCombineFirstHalf);
 
   funcName = std::string("launch_combine");
   m.def(funcName.c_str(), &LaunchCombine);

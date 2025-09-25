@@ -260,6 +260,13 @@ class EpDispatchCombineTestCase:
 
         dist.barrier()
 
+        op.combine_first_half(
+            dispatch_output,
+            dispatch_weights,
+            all_rank_indices[self.rank],
+        )
+        torch.cuda.synchronize()
+        dist.barrier()
         combine_output, combine_output_weight, combine_comm_duration = op.combine(
             dispatch_output,
             dispatch_weights,
@@ -393,6 +400,13 @@ class EpDispatchCombineTestCase:
         torch.cuda.synchronize()
         dist.barrier()
         start_event.record()
+        op.combine_first_half(
+            dispatch_output,
+            None,
+            all_rank_indices[self.rank],
+        )
+        torch.cuda.synchronize()
+        dist.barrier()
         combine_output, _, combine_comm_duration = op.combine(
             dispatch_output,
             None,
