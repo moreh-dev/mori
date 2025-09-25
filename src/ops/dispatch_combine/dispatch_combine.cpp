@@ -29,6 +29,7 @@
 #include "mori/core/core.hpp"
 #include "mori/shmem/shmem.hpp"
 #include "src/ops/dispatch_combine/internode.hpp"
+#include "src/ops/dispatch_combine/internode_divided.hpp"
 #include "src/ops/dispatch_combine/intranode.hpp"
 
 namespace mori {
@@ -259,7 +260,14 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
             actualWarpNumPerBlock * config.numExpertPerToken * (sizeof(DataT**) + sizeof(float**));
         if (kernelType == KernelType::InterNode) {
           assert(config.useExternalInpBuffer);
-          EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz);
+
+          if(config.worldSize == 16 && gpu_per_node == 8) {
+            EpCombineInterNodeKernelDivided<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz, 0);
+            EpCombineInterNodeKernelDivided<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz, 1);
+            EpCombineInterNodeKernelFinalize<<<grid, block, sharedMemSize, stream>>>(args);
+          } else {
+            EpCombineInterNodeKernel<<<grid, block, sharedMemSize, stream>>>(args, gpu_per_node, (float)clockRateInKHz);
+          }
         } else if (kernelType == KernelType::IntraNode) {
           EpCombineIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
