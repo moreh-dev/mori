@@ -31,6 +31,7 @@
 #include "src/ops/dispatch_combine/internode.hpp"
 #include "src/ops/dispatch_combine/internode_v1.hpp"
 #include "src/ops/dispatch_combine/intranode.hpp"
+#include "src/ops/dispatch_combine/intranode_divided.hpp"
 
 namespace mori {
 namespace moe {
@@ -284,6 +285,33 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
       argsVariant);
 }
 
+void EpDispatchCombineHandle::LaunchCombineFirstHalf(KernelType kernelType, int blockNum,
+                                                     int warpPerBlock, hipStream_t stream) {
+  size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
+  dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
+  dim3 block(warpSize * actualWarpNumPerBlock);
+
+  auto argsVariant = GetEpDispatchCombineArgsByInputType(*this);
+  std::visit(
+      [&](auto&& args) {
+        using ArgsT = std::decay_t<decltype(args)>;
+        using DataT = typename ArgsT::data_type;
+
+        size_t sharedMemSize =
+            actualWarpNumPerBlock * config.numExpertPerToken * (sizeof(DataT**) + sizeof(float**));
+        if (kernelType == KernelType::InterNode) {
+          assert(false);  // Not implemented yet
+        } else if (kernelType == KernelType::InterNodeV1) {
+          assert(false);  // Not implemented yet
+        } else if (kernelType == KernelType::IntraNode) {
+          EpCombineIntraNodeKernelDivided<DataT><<<grid, block, sharedMemSize, stream>>>(args, 0);
+        } else {
+          assert(false);
+        }
+      },
+      argsVariant);
+}
+
 void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum, int warpPerBlock,
                                             hipStream_t stream) {
   size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
@@ -305,7 +333,8 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
           assert(config.useExternalInpBuffer);
           EpCombineInterNodeV1Kernel<<<grid, block, sharedMemSize, stream>>>(args);
         } else if (kernelType == KernelType::IntraNode) {
-          EpCombineIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
+          EpCombineIntraNodeKernelDivided<DataT><<<grid, block, sharedMemSize, stream>>>(args, 1);
+          EpCombineIntraNodeKernelFinalize<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
           assert(false);
         }
