@@ -86,6 +86,15 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
 
         self.sync()
         start_event.record()
+        op.combine_first_half(
+            combine_input,
+            # dispatch_weights,
+            None,
+            dispatch_indices,
+            block_num=80,
+            warp_per_block=16,
+        )
+        self.sync()
         combine_output, _ = op.combine(
             combine_input,
             # dispatch_weights,

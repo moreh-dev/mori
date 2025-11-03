@@ -80,6 +80,7 @@ class EpDispatchCombineOp:
         )
 
         self._dispatch_func = _cpp_dispatch_combine_factory("launch_dispatch")
+        self._combine_first_half_func = _cpp_dispatch_combine_factory("launch_combine_first_half")
         self._combine_func = _cpp_dispatch_combine_factory("launch_combine")
         self._reset_func = _cpp_dispatch_combine_factory("launch_reset")
         self._get_dispatch_src_token_pos_func = _cpp_dispatch_combine_factory(
@@ -116,6 +117,25 @@ class EpDispatchCombineOp:
             input,
             weights,
             scales,
+            indices,
+            block_num,
+            warp_per_block,
+        )
+
+    def combine_first_half(
+        self,
+        input: torch.Tensor,
+        weights: torch.Tensor,
+        indices: torch.Tensor,
+        block_num: int = -1,
+        warp_per_block: int = -1,
+        call_reset: bool = False,
+    ):
+        self._combine_first_half_func(
+            self._handle,
+            self.config.kernel_type.value,
+            input,
+            weights,
             indices,
             block_num,
             warp_per_block,

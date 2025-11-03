@@ -252,6 +252,16 @@ class EpDispatchCombineTestCase:
         combine_input = dispatch_output
         combine_input_weight = dispatch_weights
 
+    
+        op.combine_first_half(
+            combine_input.to(torch.bfloat16),
+            combine_input_weight,
+            indices,
+            block_num=80,
+            warp_per_block=8,
+        )
+        torch.cuda.synchronize()
+
         combine_output, combine_output_weight = op.combine(
             combine_input.to(torch.bfloat16),
             combine_input_weight,

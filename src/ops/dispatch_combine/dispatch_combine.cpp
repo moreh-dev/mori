@@ -304,7 +304,8 @@ void EpDispatchCombineHandle::LaunchCombineFirstHalf(KernelType kernelType, int 
         } else if (kernelType == KernelType::InterNodeV1) {
           assert(false);  // Not implemented yet
         } else if (kernelType == KernelType::IntraNode) {
-          EpCombineIntraNodeKernelDivided<DataT><<<grid, block, sharedMemSize, stream>>>(args, 0);
+          EpCombineIntraNodeDividedKernel<DataT>
+              <<<grid, block, sharedMemSize, stream>>>(args, true, false);
         } else {
           assert(false);
         }
@@ -333,8 +334,9 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
           assert(config.useExternalInpBuffer);
           EpCombineInterNodeV1Kernel<<<grid, block, sharedMemSize, stream>>>(args);
         } else if (kernelType == KernelType::IntraNode) {
-          EpCombineIntraNodeKernelDivided<DataT><<<grid, block, sharedMemSize, stream>>>(args, 1);
-          EpCombineIntraNodeKernelFinalize<DataT><<<grid, block, sharedMemSize, stream>>>(args);
+          EpCombineIntraNodeDividedKernel<DataT>
+              <<<grid, block, sharedMemSize, stream>>>(args, false, true);
+          // EpCombineIntraNodeKernelFinalize<DataT><<<grid, block, sharedMemSize, stream>>>(args);
         } else {
           assert(false);
         }
