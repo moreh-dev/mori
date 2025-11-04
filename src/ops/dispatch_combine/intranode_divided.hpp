@@ -104,6 +104,9 @@ __global__ void EpCombineIntraNodeDividedKernel(EpDispatchCombineArgs<T> args, b
     }
     __syncthreads();
 
+    *args.totalRecvTokenNum = 0;
+    if (args.curRankNumToken == 0) return;
+
     extern __shared__ char sharedMem[];
     T** srcPtrs = reinterpret_cast<T**>(sharedMem) + warpId * config.numExpertPerToken;
     float** srcWeightsPtr = reinterpret_cast<float**>(sharedMem) +

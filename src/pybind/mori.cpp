@@ -136,9 +136,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> LaunchCombine(
     weightsPtr = weights->data_ptr<float>();
   }
 
-  handle.PrepareInference(mori::ScalarTypeToHipDataType(input.scalar_type()), input.data_ptr(),
-                          nullptr, weightsPtr, topkIds.data_ptr<mori::moe::index_t>(),
-                          handle.curRankNumToken);
   handle.LaunchCombine((mori::moe::KernelType)kernelType, blockNum, warpPerBlock,
                        at::cuda::getCurrentHIPStream());
 
