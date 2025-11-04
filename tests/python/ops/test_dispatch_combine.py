@@ -240,6 +240,10 @@ class EpDispatchCombineTestCase:
             dispatch_recv_num_token,
         )
 
+        op.combine_first_half(
+            dispatch_output, dispatch_weights, dispatch_indices, call_reset=False
+        )
+        self.sync()
         combine_output, combine_output_weight = op.combine(
             dispatch_output, dispatch_weights, dispatch_indices, call_reset=False
         )
