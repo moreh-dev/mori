@@ -48,6 +48,7 @@ EpDispatchCombineHandle::EpDispatchCombineHandle(EpDispatchCombineConfig config)
   InitializeTokenNumSignalBuf();
   InitializeOrderMapBuf();
   InitializeBarrier();
+  InitializeProxy();
 }
 
 EpDispatchCombineHandle::~EpDispatchCombineHandle() {
@@ -96,6 +97,9 @@ void EpDispatchCombineHandle::InitializeShmemBuf() {
   size_t maxIndicesSize = config.MaxNumTokensToRecv() * config.numExpertPerToken * sizeof(index_t);
   shmemInpIndicesMemObj = ShmemMallocAndReturnMemObjPtr(maxIndicesSize, hipDeviceMallocUncached);
   shmemOutIndicesMemObj = ShmemMallocAndReturnMemObjPtr(maxIndicesSize, hipDeviceMallocUncached);
+
+  size_t maxTokenSizePerRank = static_cast<ssize_t>(config.MaxNumTokensToRecvPerRank) *
+                               config.hiddenDim * config.maxTokenTypeSize;
 }
 
 void EpDispatchCombineHandle::FinalizeShmemBuf() {
@@ -168,7 +172,6 @@ void EpDispatchCombineHandle::InitializeOrderMapBuf() {
 
   HIP_RUNTIME_CHECK(hipMalloc(&dispDestTokIdMap, maxNumOutToken * sizeof(index_t)));
   HIP_RUNTIME_CHECK(hipMemset(dispDestTokIdMap, 0, maxNumOutToken * sizeof(index_t)));
-
   size_t maxNumInterNodeToken = config.worldSize / config.gpuPerNode *
                                 config.maxNumInpTokenPerRank * config.numExpertPerToken;
   HIP_RUNTIME_CHECK(hipMalloc(&interNodeDispDestTokIdMap, maxNumInterNodeToken * sizeof(index_t)));
@@ -234,6 +237,12 @@ void EpDispatchCombineHandle::FinalizeBarrier() {
   HIP_RUNTIME_CHECK(hipFree(interNodeBlocksBarrier));
   ShmemFree(crossDeviceBarrierMemObj->localPtr);
   ShmemFree(interNodeChunkFlagMemObj->localPtr);
+}
+
+void EpDispatchCombineHandle::InitializeProxy() {
+  if (config.useHostProxy) {
+    proxy = std::make_unique < Proxy(*this);
+  }
 }
 
 void EpDispatchCombineHandle::LaunchIntraNodeDispatch(int blockNum, int warpPerBlock,

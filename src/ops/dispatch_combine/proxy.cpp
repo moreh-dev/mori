@@ -1,0 +1,158 @@
+// Copyright © Advanced Micro Devices, Inc. All rights reserved.
+//
+// MIT License
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#include "mori/ops/dispatch_combine/proxy.hpp"
+
+#include <hip/hip_runtime.h>
+
+#include <atomic>
+#include <thread>
+
+#include "mori/ops/dispatch_combine/dispatch_combine.hpp"
+#include "mori/ops/dispatch_combine/utils.hpp"
+#include "mori/utils/mori_log.hpp"
+
+namespace {
+
+inline GetTokenSize(const mori::moe::EpDispatchCombineConfig& config, size_t dtype_size) {
+  size_t inputSize = config.hiddenDim * dtypeSize;
+  size_t weightSize = sizeof(float) * config.numExpertPerToken;
+  size_t indicesSize = sizeof(index_t) * config.numExpertPerToken;
+  size_t scalesSize = config.scaleTypeSize * config.scaleDim;
+  return inputSize + weightSize + indicesSize + scalesSize;
+}
+
+}  // namespace
+
+namespace mori {
+namespace moe {
+
+constexpr int ProxyStopCheckPeriod = 1000;
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                          Proxy                                                 */
+/* ---------------------------------------------------------------------------------------------- */
+Proxy::Proxy(const EpDispatchCombineHandle& handle)
+    : handle_(handle),
+      eventManager(std::make_unique<EventManager>()),
+      running(false),
+      hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.world_size)),
+      streamPool(handle.config.npes) {}
+
+Proxy::~Proxy() {
+  if (IsRunning()) {
+    Stop();
+  }
+}
+
+void Proxy::Start() {
+  running.store(true, std::memory_order_release);
+
+  int deviceId;
+  HIP_RUNTIME_CHECK(hipGetDevice(&deviceId));
+  auto initThread = [deviceId]() {
+    HIP_RUNTIME_CHECK(hipSetDevice(&deviceId));
+    int deviceNumaNode = getDeviceNumaNode(deviceId);
+    if (deviceNumaNode >= 0) {
+      numaBind(deviceNumaNode);
+      MORI_OPS_INFO("NUMA node of proxy thread is set to %d", deviceNumaNode);
+    }
+  };
+
+  service = std::thread([this, initThread] {
+    initThread();
+    int runCnt = 0;
+    while (true) {
+      if (runCnt++ == ProxyStopCheckPeriod) {
+        runCnt = 0;
+        if (!IsRunning()) {
+          break;
+        }
+      }
+      auto event = eventManager->Poll();
+      if (!IsAnyEventSet(event, EventBitFlag::TriggerDispatch | EventBitFlag::TriggerCombine)) {
+        continue;
+      }
+
+      if (IsEventSet(event, EventBitFlag::TriggerDispatch)) {
+        TriggerDispatch();
+      } else {
+        TriggerCombine();
+      }
+    }
+  });
+}
+
+void Proxy::Stop() {
+  running.store(false, std::memory_order_release);
+  if (service.joinable()) {
+    service.join();
+  }
+}
+
+void Proxy::TriggerDispatch() {
+  const EpDispatchCombineConfig& config = handle_.config;
+  size_t tokenSize = GetTokenSize(config, GetHipDataTypeSize(handle.inputType));
+  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+  size_t maxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
+  int myPe = config.rank;
+  int npes = config.world_size;
+
+  for (int destPe = 0; destPe < npes; ++destPe) {
+    auto stream = streamPool.GetStream(destPe);
+    index_t destTokenCount = hostTokenCounts.get()[destPe];
+
+    // Send hidden states + weights + indices + scales to remote rank
+    size_t srcOffset = destPe * (maxNumTokensToSend * tokenSize) size_t destPeOffset =
+                           myPe * (maxNumTokensToRecvPerRank * tokenSize);
+    void* src = handle.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
+    void* dst = handle.shmemDispatchInpTokMemObj->GetAs<char*>() + destPeOffset;
+    size_t nbytes = tokenSize * destTokenCount;
+    HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
+
+    // Send send token count to remote rank
+    void* tokenNumSrc = handle.sendTokenNumMemObj->GetAs<index_t*>() + destPe;
+    void* tokenNumDst = handle.recvTokenNumMemObj->GetAs<index_t*>() + myPe;
+    HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
+                                     hipMemcpyDeviceToDeviceNoCU, stream));
+  }
+  // Clear host token counts
+  ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
+}
+
+void Proxy::TriggerCombine() { /* TODO(dongmin): Implement Trigger Combine */ }
+
+bool Proxy::IsRunning() { return running.load(std::memory_order_acquire); }
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                          EventManager                                          */
+/* ---------------------------------------------------------------------------------------------- */
+EventManager::EventManager() : proxyTrigger(gpuCallocHostUnique<ProxyTrigger>()) {}
+
+EventBitFlag EventManager::Poll() {
+  EventBitFlag event = proxyTrigger->GetEvent();
+  proxyTrigger->ClearEvent();
+  return event;
+}
+
+}  // namespace moe
+}  // namespace mori

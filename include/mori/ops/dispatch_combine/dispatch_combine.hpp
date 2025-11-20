@@ -29,9 +29,13 @@
 #include <variant>
 
 #include "mori/application/application.hpp"
+#include "mori/ops/dispatch_combine/common.hpp"
+#include "mori/ops/dispatch_combine/proxy.hpp"
 
 namespace mori {
 namespace moe {
+
+class Proxy;
 
 enum KernelType {
   IntraNode = 0,
@@ -39,36 +43,6 @@ enum KernelType {
   InterNodeV1 = 2,
   InterNodeV1LL = 3,
 };
-
-inline const char* HipDataTypeToString(hipDataType dtype) {
-  switch (dtype) {
-    case HIP_R_16F:
-      return "HIP_R_16F";
-    case HIP_R_32F:
-      return "HIP_R_32F";
-    case HIP_R_16BF:
-      return "HIP_R_16BF";
-    case HIP_R_8F_E4M3_FNUZ:
-      return "HIP_R_8F_E4M3_FNUZ";
-    default:
-      return "Unknown";
-  }
-}
-
-inline size_t GetHipDataTypeSize(hipDataType dtype) {
-  switch (dtype) {
-    case HIP_R_32F:
-      return sizeof(float);
-    case HIP_R_16BF:
-      return sizeof(hip_bfloat16);
-    case HIP_R_8F_E4M3_FNUZ:
-      return sizeof(__hip_fp8_e4m3_fnuz);
-    default:
-      throw std::runtime_error("Unknown hipDataType");
-  }
-}
-
-using index_t = int32_t;
 
 #define MAX_EXPERTS_PER_TOKEN (8)
 struct EpDispatchCombineConfig {
@@ -88,6 +62,7 @@ struct EpDispatchCombineConfig {
   bool useExternalInpBuffer{true};
   int gpuPerNode{8};
   int rdmaBlockNum{1};
+  bool useHostProxy{false};
 
   inline __host__ __device__ int MaxNumTokensToSendPerRank() const { return maxNumInpTokenPerRank; }
 
@@ -154,6 +129,8 @@ class EpDispatchCombineHandle {
 
   void InitializeBarrier();
   void FinalizeBarrier();
+
+  void InitializeProxy();
 
  public:
   // Number of tokens on this rank and size of scale data type, updated at each round of inference
@@ -241,6 +218,8 @@ class EpDispatchCombineHandle {
   index_t* interNodeChunkFlagCombine{nullptr};
   // Map dispatched rdma token chunk index
   index_t* interNodeDispSendMap{nullptr};
+
+  std::unique_ptr<Proxy> proxy;
 };
 
 template <typename T>
@@ -290,6 +269,8 @@ struct EpDispatchCombineArgs {
   index_t* interNodeDispDestTokIdMap{nullptr};
   index_t* interNodeChunkFlagCombine{nullptr};
   index_t* interNodeDispSendMap{nullptr};
+  uint32_t* hostTokenCounts{nullptr};
+  ProxyTrigger* proxyTrigger{nullptr};
 };
 
 using EpDispatchCombineArgsVariant =
@@ -343,6 +324,10 @@ EpDispatchCombineArgs<T> GetEpDispatchCombineArgs(const EpDispatchCombineHandle&
   args.interNodeDispDestTokIdMap = handle.interNodeDispDestTokIdMap;
   args.interNodeChunkFlagCombine = handle.interNodeChunkFlagCombine;
   args.interNodeDispSendMap = handle.interNodeDispSendMap;
+  if (handle.proxy) {
+    args.hostTokenCounts = handle.proxy->GetHostTokenCounts();
+    args.proxyTrigger = handle.proxy->GetEventManager()->GetProxyTrigger();
+  }
   return args;
 }
 
