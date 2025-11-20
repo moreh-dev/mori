@@ -19,8 +19,6 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-#pragma once
-
 #include "mori/ops/dispatch_combine/utils.hpp"
 
 #include <hip/hip_runtime.h>
@@ -53,7 +51,7 @@ static const std::string getBusId(int deviceId) {
   // format. Still need to allocate proper space in case PCI domain goes
   // higher.
   char busIdChar[] = "00000000:00:00.0";
-  MSCCLPP_CUDATHROW(hipDeviceGetPCIBusId(busIdChar, sizeof(busIdChar), deviceId));
+  HIP_RUNTIME_CHECK(hipDeviceGetPCIBusId(busIdChar, sizeof(busIdChar), deviceId));
   // we need the hex in lower case format
   for (size_t i = 0; i < sizeof(busIdChar); i++) {
     busIdChar[i] = std::tolower(busIdChar[i]);
@@ -93,13 +91,13 @@ void numaBind(int node) {
 /* ---------------------------------------------------------------------------------------------- */
 StreamPool::StreamPool(int npes) : streams_(npes) {
   for (int i = 0; i < npes; ++i) {
-    hipStreamCreateWithFlag(&streams_[i], hipStreamNonBlocking);
+    HIP_RUNTIME_CHECK(hipStreamCreateWithFlags(&streams_[i], hipStreamNonBlocking));
   }
 }
 
 StreamPool::~StreamPool() {
   for (auto stream_ : streams_) {
-    hipStreamDestroy(stream_);
+    HIP_RUNTIME_CHECK(hipStreamDestroy(stream_));
   }
 }
 

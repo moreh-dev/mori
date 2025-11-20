@@ -29,6 +29,7 @@ namespace mori {
 namespace moe {
 
 class EpDispatchCombineHandle;
+class EventManager;
 
 // Host-side proxy for dispatch/combine intiation
 class Proxy {

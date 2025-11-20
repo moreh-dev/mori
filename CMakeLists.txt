@@ -90,6 +90,9 @@ add_library(mori_logging INTERFACE)
 target_include_directories(mori_logging INTERFACE include
                                                   3rdparty/spdlog/include)
 
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+find_package(NUMA REQUIRED)
+
 if(BUILD_EXAMPLES)
   set(BUILD_APPLICATION ON)
   add_subdirectory(examples)

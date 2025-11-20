@@ -27,16 +27,17 @@
 #include <atomic>
 #include <thread>
 
+#include "mori/ops/dispatch_combine/common.hpp"
 #include "mori/ops/dispatch_combine/dispatch_combine.hpp"
 #include "mori/ops/dispatch_combine/utils.hpp"
 #include "mori/utils/mori_log.hpp"
 
 namespace {
 
-inline GetTokenSize(const mori::moe::EpDispatchCombineConfig& config, size_t dtype_size) {
+size_t GetTokenSize(const mori::moe::EpDispatchCombineConfig& config, size_t dtypeSize) {
   size_t inputSize = config.hiddenDim * dtypeSize;
   size_t weightSize = sizeof(float) * config.numExpertPerToken;
-  size_t indicesSize = sizeof(index_t) * config.numExpertPerToken;
+  size_t indicesSize = sizeof(mori::moe::index_t) * config.numExpertPerToken;
   size_t scalesSize = config.scaleTypeSize * config.scaleDim;
   return inputSize + weightSize + indicesSize + scalesSize;
 }
@@ -55,8 +56,8 @@ Proxy::Proxy(const EpDispatchCombineHandle& handle)
     : handle_(handle),
       eventManager(std::make_unique<EventManager>()),
       running(false),
-      hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.world_size)),
-      streamPool(handle.config.npes) {}
+      hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.worldSize)),
+      streamPool(handle.config.worldSize) {}
 
 Proxy::~Proxy() {
   if (IsRunning()) {
@@ -70,7 +71,7 @@ void Proxy::Start() {
   int deviceId;
   HIP_RUNTIME_CHECK(hipGetDevice(&deviceId));
   auto initThread = [deviceId]() {
-    HIP_RUNTIME_CHECK(hipSetDevice(&deviceId));
+    HIP_RUNTIME_CHECK(hipSetDevice(deviceId));
     int deviceNumaNode = getDeviceNumaNode(deviceId);
     if (deviceNumaNode >= 0) {
       numaBind(deviceNumaNode);
@@ -111,27 +112,27 @@ void Proxy::Stop() {
 
 void Proxy::TriggerDispatch() {
   const EpDispatchCombineConfig& config = handle_.config;
-  size_t tokenSize = GetTokenSize(config, GetHipDataTypeSize(handle.inputType));
+  size_t tokenSize = GetTokenSize(config, GetHipDataTypeSize(handle_.inputType));
   size_t maxNumTokensToSend = config.MaxNumTokensToSend();
   size_t maxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
   int myPe = config.rank;
-  int npes = config.world_size;
+  int npes = config.worldSize;
 
   for (int destPe = 0; destPe < npes; ++destPe) {
     auto stream = streamPool.GetStream(destPe);
     index_t destTokenCount = hostTokenCounts.get()[destPe];
 
     // Send hidden states + weights + indices + scales to remote rank
-    size_t srcOffset = destPe * (maxNumTokensToSend * tokenSize) size_t destPeOffset =
-                           myPe * (maxNumTokensToRecvPerRank * tokenSize);
-    void* src = handle.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
-    void* dst = handle.shmemDispatchInpTokMemObj->GetAs<char*>() + destPeOffset;
+    size_t srcOffset = destPe * (maxNumTokensToSend * tokenSize);
+    size_t destPeOffset = myPe * (maxNumTokensToRecvPerRank * tokenSize);
+    void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
+    void* dst = handle_.shmemDispatchInpTokMemObj->GetAs<char*>() + destPeOffset;
     size_t nbytes = tokenSize * destTokenCount;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
 
     // Send send token count to remote rank
-    void* tokenNumSrc = handle.sendTokenNumMemObj->GetAs<index_t*>() + destPe;
-    void* tokenNumDst = handle.recvTokenNumMemObj->GetAs<index_t*>() + myPe;
+    void* tokenNumSrc = handle_.sendTokenNumMemObj->GetAs<index_t*>() + destPe;
+    void* tokenNumDst = handle_.recvTokenNumMemObj->GetAs<index_t*>() + myPe;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
                                      hipMemcpyDeviceToDeviceNoCU, stream));
   }

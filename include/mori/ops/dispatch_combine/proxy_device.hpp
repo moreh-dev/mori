@@ -21,8 +21,8 @@
 // SOFTWARE.
 #pragma once
 
+#include "mori/core/core.hpp"
 #include "mori/core/utils.hpp"
-#include "mori/ops/dispatch_combine/dispatch_combine.hpp"
 #include "mori/ops/dispatch_combine/utils.hpp"
 
 namespace mori {
@@ -35,34 +35,32 @@ enum class EventBitFlag : EventBitFlagType {
   TriggerCombine = 0x2
 };
 
-inline EventBitFlag operator&(const EventBitFlag& lhs, const EventBitFlag& rhs) {
+inline EventBitFlag operator&(EventBitFlag lhs, EventBitFlag rhs) {
   return static_cast<EventBitFlag>(static_cast<EventBitFlagType>(lhs) &
                                    static_cast<EventBitFlagType>(rhs));
 }
 
-inline EventBitFlag operator|(const EventBitFlag& lhs, const EventBitFlag& rhs) {
+inline EventBitFlag operator|(EventBitFlag lhs, EventBitFlag rhs) {
   return static_cast<EventBitFlag>(static_cast<EventBitFlagType>(lhs) |
                                    static_cast<EventBitFlagType>(rhs));
 }
 
-inline bool operator==(const EventBitFlag& lhs, const EventBitFlag& rhs) {
+inline bool operator==(EventBitFlag lhs, EventBitFlag rhs) {
   return static_cast<EventBitFlagType>(lhs) == static_cast<EventBitFlagType>(rhs);
 }
 
-inline bool operator!=(const EventBitFlag& lhs, const EventBitFlag& rhs) {
+inline bool operator!=(EventBitFlag lhs, EventBitFlag rhs) {
   return static_cast<EventBitFlagType>(lhs) != static_cast<EventBitFlagType>(rhs);
 }
 
-inline bool IsEventSet(const EventBitFlag& self, const EventBitFlag& event) {
-  return (self & event) == event;
-}
+inline bool IsEventSet(EventBitFlag self, EventBitFlag event) { return (self & event) == event; }
 
-inline bool IsAnyEventSet(const EventBitFlag& self, const EventBitFlag& event) {
+inline bool IsAnyEventSet(EventBitFlag self, EventBitFlag event) {
   return (self & event) != EventBitFlag::None;
 }
 
 struct ProxyTrigger {
-  ProxyTrigger() : event(EventBitFlag::None) {}
+  ProxyTrigger() : proxyEvent(EventBitFlag::None) {}
 
   __host__ __forceinline__ EventBitFlag GetEvent() {
     return static_cast<EventBitFlag>(AtomicLoad<EventBitFlagType>(
@@ -75,8 +73,9 @@ struct ProxyTrigger {
   }
 
   __host__ __forceinline__ void ClearEvent() {
-    AtomicStore<EventBitFlagType>(
-        reinterpret_cast<EventBitFlagType*>(&(proxyTrigger.get()->proxyEvent)), memoryOrderRelease);
+    AtomicStore<EventBitFlagType>(reinterpret_cast<EventBitFlagType*>(&proxyEvent),
+                                  static_cast<EventBitFlagType>(EventBitFlag::None),
+                                  memoryOrderRelease);
   }
 
   EventBitFlag proxyEvent;

@@ -21,21 +21,16 @@
 // SOFTWARE.
 #pragma once
 
-#include <hip/hip_bfloat16.h>
-#include <hip/hip_fp8.h>
-#include <hip/library_types.h>
-
 #include <sstream>
 #include <variant>
 
 #include "mori/application/application.hpp"
 #include "mori/ops/dispatch_combine/common.hpp"
 #include "mori/ops/dispatch_combine/proxy.hpp"
+#include "mori/ops/dispatch_combine/proxy_device.hpp"
 
 namespace mori {
 namespace moe {
-
-class Proxy;
 
 enum KernelType {
   IntraNode = 0,
@@ -269,7 +264,7 @@ struct EpDispatchCombineArgs {
   index_t* interNodeDispDestTokIdMap{nullptr};
   index_t* interNodeChunkFlagCombine{nullptr};
   index_t* interNodeDispSendMap{nullptr};
-  uint32_t* hostTokenCounts{nullptr};
+  index_t* hostTokenCounts{nullptr};
   ProxyTrigger* proxyTrigger{nullptr};
 };
 

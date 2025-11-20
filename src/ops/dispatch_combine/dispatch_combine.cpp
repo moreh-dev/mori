@@ -27,6 +27,7 @@
 #include <hip/hip_runtime_api.h>
 
 #include "mori/core/core.hpp"
+#include "mori/ops/dispatch_combine/proxy.hpp"
 #include "mori/shmem/shmem.hpp"
 #include "src/ops/dispatch_combine/internode.hpp"
 #include "src/ops/dispatch_combine/internode_v1.hpp"
@@ -97,9 +98,6 @@ void EpDispatchCombineHandle::InitializeShmemBuf() {
   size_t maxIndicesSize = config.MaxNumTokensToRecv() * config.numExpertPerToken * sizeof(index_t);
   shmemInpIndicesMemObj = ShmemMallocAndReturnMemObjPtr(maxIndicesSize, hipDeviceMallocUncached);
   shmemOutIndicesMemObj = ShmemMallocAndReturnMemObjPtr(maxIndicesSize, hipDeviceMallocUncached);
-
-  size_t maxTokenSizePerRank = static_cast<ssize_t>(config.MaxNumTokensToRecvPerRank) *
-                               config.hiddenDim * config.maxTokenTypeSize;
 }
 
 void EpDispatchCombineHandle::FinalizeShmemBuf() {
@@ -241,7 +239,7 @@ void EpDispatchCombineHandle::FinalizeBarrier() {
 
 void EpDispatchCombineHandle::InitializeProxy() {
   if (config.useHostProxy) {
-    proxy = std::make_unique < Proxy(*this);
+    proxy = std::make_unique<Proxy>(*this);
   }
 }
 

@@ -24,6 +24,9 @@
 #include <hip/hip_runtime.h>
 #include <numa.h>
 
+#include <memory>
+#include <vector>
+
 #include "mori/application/utils/check.hpp"
 
 namespace mori {
@@ -97,7 +100,7 @@ constexpr auto scopeSystem = 0;
 constexpr auto scopeDevice = 0;
 
 template <typename T, int scope = scopeSystem>
-T atomicLoad(const T* ptr, int memoryOrder) {
+T AtomicLoad(const T* ptr, int memoryOrder) {
   return __atomic_load_n(ptr, memoryOrder);
 }
 
