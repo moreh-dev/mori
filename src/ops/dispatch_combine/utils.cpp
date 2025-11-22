@@ -91,7 +91,7 @@ void numaBind(int node) {
 /* ---------------------------------------------------------------------------------------------- */
 StreamPool::StreamPool(int npes) : streams_(npes) {
   for (int i = 0; i < npes; ++i) {
-    HIP_RUNTIME_CHECK(hipStreamCreateWithFlags(&streams_[i], hipStreamNonBlocking));
+    HIP_RUNTIME_CHECK(hipStreamCreateWithPriority(&streams_[i], hipStreamNonBlocking, -1));
   }
 }
 

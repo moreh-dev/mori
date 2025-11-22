@@ -50,6 +50,7 @@ class Proxy {
   const EpDispatchCombineHandle& handle_;
   std::unique_ptr<EventManager> eventManager;
   std::atomic_bool running;
+  std::atomic_bool threadStarted;
   std::thread service;
   UniqueGpuHostPtr<index_t> hostTokenCounts;
   StreamPool streamPool;

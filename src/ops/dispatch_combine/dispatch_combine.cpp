@@ -32,6 +32,7 @@
 #include "src/ops/dispatch_combine/internode.hpp"
 #include "src/ops/dispatch_combine/internode_v1.hpp"
 #include "src/ops/dispatch_combine/intranode.hpp"
+#include "src/ops/dispatch_combine/intranode_overlap.hpp"
 
 namespace mori {
 namespace moe {
@@ -264,7 +265,7 @@ void EpDispatchCombineHandle::LaunchInterNodeCombine(int blockNum, int warpPerBl
 }
 
 void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum, int warpPerBlock,
-                                             hipStream_t stream) {
+                                             hipStream_t stream, bool isAsync) {
   size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
   dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
   dim3 block(warpSize * actualWarpNumPerBlock);
@@ -287,7 +288,14 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
         } else if (kernelType == KernelType::InterNodeV1LL) {
           EpDispatchInterNodeV1KernelLowLatency<<<grid, block, sharedMemSize, stream>>>(args);
         } else if (kernelType == KernelType::IntraNode) {
-          EpDispatchIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
+          if (isAsync) {
+            EpDispatchIntraNodeOverlapSendKernel<DataT>
+                <<<grid, block, sharedMemSize, stream>>>(args);
+            EpDispatchIntraNodeOverlapRecvKernel<DataT>
+                <<<grid, block, sharedMemSize, stream>>>(args);
+          } else {
+            EpDispatchIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
+          }
         } else {
           assert(false);
         }

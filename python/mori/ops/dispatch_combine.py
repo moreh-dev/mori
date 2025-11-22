@@ -49,6 +49,7 @@ class EpDispatchCombineConfig:
     kernel_type: EpDispatchCombineKernelType = EpDispatchCombineKernelType.IntraNode
     gpu_per_node: int = 8
     rdma_block_num: int = 0
+    use_host_proxy: bool = False
 
 
 def _cpp_dispatch_combine_factory(entity_name):
@@ -76,6 +77,7 @@ class EpDispatchCombineOp:
                 use_external_inp_buf=config.use_external_inp_buf,
                 gpu_per_node=config.gpu_per_node,
                 rdma_block_num=config.rdma_block_num,
+                use_host_proxy=config.use_host_proxy,
             )
         )
 

@@ -48,6 +48,7 @@ namespace mori {
 namespace moe {
 
 constexpr int ProxyStopCheckPeriod = 1000;
+constexpr int ProxyStartWarnPeriod = 1000;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          Proxy                                                 */
@@ -56,6 +57,7 @@ Proxy::Proxy(const EpDispatchCombineHandle& handle)
     : handle_(handle),
       eventManager(std::make_unique<EventManager>()),
       running(false),
+      threadStarted(false),
       hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.worldSize)),
       streamPool(handle.config.worldSize) {}
 
@@ -75,12 +77,15 @@ void Proxy::Start() {
     int deviceNumaNode = getDeviceNumaNode(deviceId);
     if (deviceNumaNode >= 0) {
       numaBind(deviceNumaNode);
-      MORI_OPS_INFO("NUMA node of proxy thread is set to %d", deviceNumaNode);
+      MORI_OPS_INFO("NUMA node of proxy thread (device {}) is set to {}", deviceId, deviceNumaNode);
     }
   };
 
   service = std::thread([this, initThread] {
     initThread();
+    threadStarted.store(true, std::memory_order_release);
+    MORI_OPS_INFO("Proxy thread has started");
+
     int runCnt = 0;
     while (true) {
       if (runCnt++ == ProxyStopCheckPeriod) {
@@ -101,6 +106,15 @@ void Proxy::Start() {
       }
     }
   });
+
+  int count = 0;
+  while (!threadStarted.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (count++ == ProxyStartWarnPeriod) {
+      count = 0;
+      MORI_OPS_WARN("Proxy thread startup taking longer than expected.");
+    }
+  }
 }
 
 void Proxy::Stop() {
@@ -117,6 +131,7 @@ void Proxy::TriggerDispatch() {
   size_t maxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
   int myPe = config.rank;
   int npes = config.worldSize;
+  MORI_OPS_INFO("[{}] Proxy::TriggerDispatch", myPe);
 
   for (int destPe = 0; destPe < npes; ++destPe) {
     auto stream = streamPool.GetStream(destPe);
@@ -126,13 +141,13 @@ void Proxy::TriggerDispatch() {
     size_t srcOffset = destPe * (maxNumTokensToSend * tokenSize);
     size_t destPeOffset = myPe * (maxNumTokensToRecvPerRank * tokenSize);
     void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
-    void* dst = handle_.shmemDispatchInpTokMemObj->GetAs<char*>() + destPeOffset;
+    void* dst = handle_.shmemDispatchInpTokMemObj->GetAs<char*>(destPe) + destPeOffset;
     size_t nbytes = tokenSize * destTokenCount;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
 
     // Send send token count to remote rank
     void* tokenNumSrc = handle_.sendTokenNumMemObj->GetAs<index_t*>() + destPe;
-    void* tokenNumDst = handle_.recvTokenNumMemObj->GetAs<index_t*>() + myPe;
+    void* tokenNumDst = handle_.recvTokenNumMemObj->GetAs<index_t*>(destPe) + myPe;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
                                      hipMemcpyDeviceToDeviceNoCU, stream));
   }
@@ -151,7 +166,9 @@ EventManager::EventManager() : proxyTrigger(gpuCallocHostUnique<ProxyTrigger>())
 
 EventBitFlag EventManager::Poll() {
   EventBitFlag event = proxyTrigger->GetEvent();
-  proxyTrigger->ClearEvent();
+  if (event != EventBitFlag::None) {
+    proxyTrigger->ClearEvent();
+  }
   return event;
 }
 
