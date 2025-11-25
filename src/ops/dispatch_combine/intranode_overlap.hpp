@@ -39,6 +39,59 @@ inline __device__ index_t FindSrcPe(const index_t* ps, index_t tokenIdx, int wor
 }
 
 /* ---------------------------------------------------------------------------------------------- */
+/*                                          BarrierKernel                                         */
+/* ---------------------------------------------------------------------------------------------- */
+template <typename T>
+inline __device__ void SetCrossDeviceBarrierAndSignalProxy(EpDispatchCombineArgs<T> args,
+                                                           const uint32_t crossDeviceBarrierFlag) {
+  int thdId = threadIdx.x;
+  int laneId = threadIdx.x & (warpSize - 1);
+  int globalThdId = blockIdx.x * blockDim.x + threadIdx.x;
+
+  int warpNum = blockDim.x / warpSize;
+  int globalWarpNum = gridDim.x * warpNum;
+
+  if (laneId == 0) atomicAdd(args.combineGridBarrier, 1);
+
+  index_t* recvTokenNumObj = args.recvTokenNumMemObj->template GetAs<index_t*>();
+  if (globalThdId < args.config.worldSize) {
+    // Set remote flag after all copies are done
+    if (globalThdId == 0) {
+      shmem::ShmemUint32WaitUntilEquals(args.combineGridBarrier, globalWarpNum);
+      args.combineGridBarrier[0] = 0;
+      core::AtomicStoreRelaxedSystem(
+          args.crossDeviceBarrierMemObj->template GetAs<uint32_t*>() + args.config.rank,
+          crossDeviceBarrierFlag);
+    }
+
+    // Signal Host proxy
+    index_t recvTokenNum = core::AtomicLoadRelaxed(recvTokenNumObj + globalThdId) - 1;
+    assert(recvTokenNum >= 0);
+    args.hostTokenCounts[globalThdId] = recvTokenNum;
+    __threadfence_system();
+
+    if (globalThdId == 0) {
+      args.proxyTrigger->SetEvent(EventBitFlag::TriggerCombine);
+    }
+  }
+}
+
+template <typename T>
+inline __device__ void WaitCrossDeviceBarrier(EpDispatchCombineArgs<T> args,
+                                              const uint32_t crossDeviceBarrierFlag) {
+  int thdId = threadIdx.x;
+  int npes = args.config.worldSize;
+
+  // Wait cross device barrier
+  uint32_t* localBarrierPtr = args.crossDeviceBarrierMemObj->template GetAs<uint32_t*>();
+  if (thdId < npes) {
+    while (core::AtomicLoadRelaxedSystem(localBarrierPtr + thdId) != crossDeviceBarrierFlag) {
+    }
+  }
+  __syncthreads();
+}
+
+/* ---------------------------------------------------------------------------------------------- */
 /*                                    EpDispatchIntraNodeKernel                                   */
 /* ---------------------------------------------------------------------------------------------- */
 template <typename T>
@@ -63,7 +116,7 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
   size_t scalesOffset = indicesOffset + sizeof(index_t) * config.numExpertPerToken;
   size_t stagingOffset = scalesOffset + config.scaleTypeSize * config.scaleDim;
 
-  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+  size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
 
   if (args.tokenIndices && args.inpTokenBuf) {
     // Phase1: send token
@@ -83,17 +136,17 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
                                config.numExpertPerRank);
       }
       if (__any(condition)) {
-        if (laneId == 0) args.dispDestTokIdMap[i] = config.worldSize * maxNumTokensToSend;
+        if (laneId == 0) args.dispDestTokIdMap[i] = config.worldSize * maxNumTokensToSendPerRank;
         continue;
       }
 
       if (laneId == 0) {
         // decide token id in dest pe
         destTokId = atomicAdd(args.destPeTokenCounter + destPe, 1);
-        args.dispDestTokIdMap[i] = destPe * maxNumTokensToSend + destTokId;
+        args.dispDestTokIdMap[i] = destPe * maxNumTokensToSendPerRank + destTokId;
       }
       destTokId = __shfl(destTokId, 0);
-      index_t destTokOffset = (destPe * maxNumTokensToSend + destTokId) * stagingOffset;
+      index_t destTokOffset = (destPe * maxNumTokensToSendPerRank + destTokId) * stagingOffset;
       index_t srcTokOffset = srcTokId * size_t(config.hiddenDim) * sizeof(T);
 
       // Copy hidden states
@@ -133,9 +186,9 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
       shmem::ShmemUint32WaitUntilEquals(args.dispatchGridBarrier, globalWarpNum);
       args.dispatchGridBarrier[0] = 0;
       index_t numTokenSignal = core::AtomicLoadRelaxed(args.destPeTokenCounter + destPe) + 1;
+      args.destPeTokenCounter[destPe] = 0;
       core::AtomicStoreRelaxedSystem(args.sendTokenNumMemObj->template GetAs<index_t*>() + destPe,
                                      numTokenSignal);
-      args.destPeTokenCounter[destPe] = 0;
       // Store token counts to host buffer
       args.hostTokenCounts[destPe] = numTokenSignal - 1;
     }
@@ -158,6 +211,7 @@ __global__ void EpDispatchIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> ar
   int warpId = thdId / warpSize;
   int warpNum = blockDim.x / warpSize;
 
+  int globalThdId = blockIdx.x * blockDim.x + threadIdx.x;
   int globalWarpId = blockIdx.x * warpNum + warpId;
   int globalWarpNum = gridDim.x * warpNum;
 
@@ -171,7 +225,7 @@ __global__ void EpDispatchIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> ar
 
   size_t MaxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
 
-  __shared__ index_t recvTokenNums[MAX_GPUS_PER_NODE];
+  extern __shared__ index_t recvTokenNums[];
   if (warpId == 0) {
     index_t* recvTokenNumObj = args.recvTokenNumMemObj->template GetAs<index_t*>();
     for (int srcPe = laneId; srcPe < npes; srcPe += warpSize) {
@@ -188,6 +242,7 @@ __global__ void EpDispatchIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> ar
   __syncthreads();
 
   index_t totalTokenNum = recvTokenNums[npes - 1];
+  size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
   for (int tokenIdx = globalWarpId; tokenIdx < totalTokenNum; tokenIdx += globalWarpNum) {
     int srcPe = 0;
     if (laneId == 0) {
@@ -220,18 +275,135 @@ __global__ void EpDispatchIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> ar
           config.scaleDim * config.scaleTypeSize);
     }
   }
-  if (laneId == 0) atomicAdd(args.dispatchGridBarrier, 1);
 
-  // Reset signal to 0
-  if (globalWarpId == 0) {
-    if (size_t destPe = laneId; destPe < npes) {
-      // Wait until all tokens are sent
-      shmem::ShmemUint32WaitUntilEquals(args.dispatchGridBarrier, globalWarpNum);
-      args.dispatchGridBarrier[0] = 0;
+  if (globalThdId == 0) {
+    args.totalRecvTokenNum[0] = totalTokenNum;
+  }
+}
 
-      index_t* signal = args.recvTokenNumMemObj->template GetAs<index_t*>() + destPe;
-      core::AtomicStoreRelaxedSystem(signal, 0);
+/* ---------------------------------------------------------------------------------------------- */
+/*                                    EpCombineIntraNodeKernel                                    */
+/* ---------------------------------------------------------------------------------------------- */
+template <typename T>
+__global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> args) {
+  const EpDispatchCombineConfig& config = args.config;
+  int thdId = threadIdx.x;
+  int warpId = thdId / warpSize;
+  int warpNum = blockDim.x / warpSize;
+
+  int globalThdId = blockIdx.x * blockDim.x + threadIdx.x;
+  int globalWarpId = blockIdx.x * warpNum + warpId;
+  int globalWarpNum = gridDim.x * warpNum;
+
+  const uint32_t crossDeviceBarrierFlag = args.crossDeviceBarrierFlag[0];
+  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+
+  index_t totalRecvTokenNum = args.totalRecvTokenNum[0];
+
+  size_t weightSize = args.weightsBuf ? sizeof(float) * config.numExpertPerToken : 0;
+  size_t hiddenSize = config.hiddenDim * sizeof(T);
+  size_t stagingOffset = weightSize + hiddenSize;
+
+  int npes = config.worldSize;
+
+  for (int i = globalWarpId; i < totalRecvTokenNum; i += globalWarpNum) {
+    size_t destTokOffset = i * stagingOffset;
+    size_t srcTokOffset = i * hiddenSize;
+
+    core::WarpCopy(args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset,
+                   reinterpret_cast<char*>(args.inpTokenBuf) + srcTokOffset, hiddenSize);
+
+    if (args.weightsBuf) {
+      size_t srcWeightOffset = i * weightSize;
+      core::WarpCopy(
+          args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + weightSize,
+          reinterpret_cast<char*>(args.weightsBuf) + srcWeightOffset, weightSize);
     }
+  }
+
+  SetCrossDeviceBarrierAndSignalProxy(args, crossDeviceBarrierFlag);
+  *args.totalRecvTokenNum = 0;
+  if (globalThdId < npes) {
+    core::AtomicStoreRelaxedSystem(
+        args.sendTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
+    core::AtomicStoreRelaxedSystem(
+        args.recvTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
+  }
+}
+
+template <typename T>
+__global__ void EpCombineIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> args) {
+  const EpDispatchCombineConfig& config = args.config;
+  int thdId = threadIdx.x;
+  int thdNum = blockDim.x;
+
+  int laneId = threadIdx.x & (warpSize - 1);
+  int warpId = thdId / warpSize;
+  int warpNum = blockDim.x / warpSize;
+
+  int globalThdId = blockIdx.x * blockDim.x + threadIdx.x;
+  int globalWarpId = blockIdx.x * warpNum + warpId;
+  int globalWarpNum = gridDim.x * warpNum;
+  const uint32_t crossDeviceBarrierFlag = args.crossDeviceBarrierFlag[0];
+
+  int myPe = config.rank;
+  int npes = config.worldSize;
+  extern __shared__ char sharedMem[];
+  T** srcPtrs = reinterpret_cast<T**>(sharedMem) + warpId * config.numExpertPerToken;
+  float** srcWeightsPtr = reinterpret_cast<float**>(sharedMem) +
+                          warpNum * config.numExpertPerToken + warpId * config.numExpertPerToken;
+
+  index_t warpsPerToken = (globalWarpNum + args.curRankNumToken - 1) / args.curRankNumToken;
+  index_t hiddenDimPerWarp = (config.hiddenDim + warpsPerToken - 1) / warpsPerToken;
+  size_t weightOffset = args.weightsBuf ? config.hiddenDim * sizeof(T) : 0;
+  size_t stagingOffset = weightOffset + sizeof(float) * config.numExpertPerToken;
+  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+
+  // Wait cross device barrier
+  WaitCrossDeviceBarrier(args, crossDeviceBarrierFlag);
+  assert(config.numExpertPerToken < warpSize);
+  for (int i = globalWarpId; i < (args.curRankNumToken * warpsPerToken); i += globalWarpNum) {
+    index_t tokenId = i / warpsPerToken;
+    index_t inTokenPartId = i % warpsPerToken;
+    index_t hiddenDimOffset = inTokenPartId * hiddenDimPerWarp;
+    index_t hiddenDimSize =
+        std::max(0, std::min(config.hiddenDim - hiddenDimOffset, hiddenDimPerWarp));
+
+    // Prepare data pointers on different GPUs
+    for (int j = laneId; j < config.numExpertPerToken; j += warpSize) {
+      index_t destTokId = args.dispDestTokIdMap[tokenId * config.numExpertPerToken + j];
+      index_t destPe = destTokId / maxNumTokensToSend;
+      index_t destTokOffset = destTokId * stagingOffset;
+
+      if (destPe < config.worldSize) {
+        index_t destLocalTokId = destTokId - destPe * maxNumTokensToSend;
+        srcPtrs[j] = reinterpret_cast<T*>(args.shmemCombineInpTokMemObj->template GetAs<char*>() +
+                                          destTokOffset + hiddenDimOffset * sizeof(T));
+        srcWeightsPtr[j] = reinterpret_cast<float*>(
+            args.shmemCombineInpTokMemObj->template GetAs<char*>() + destTokOffset + weightOffset);
+      } else {
+        srcPtrs[j] = nullptr;
+        srcWeightsPtr[j] = nullptr;
+      }
+    }
+    core::WarpAccum<T, 4>(args.shmemCombineOutTokMemObj->template GetAs<T*>() +
+                              tokenId * config.hiddenDim + hiddenDimOffset,
+                          srcPtrs, nullptr, config.numExpertPerToken, hiddenDimSize);
+
+    if (args.weightsBuf && inTokenPartId == warpsPerToken - 1) {
+      core::WarpAccum<float, 4>(args.shmemCombineOutWeightsMemObj->template GetAs<float*>() +
+                                    tokenId * config.numExpertPerToken,
+                                srcWeightsPtr, nullptr, config.numExpertPerToken,
+                                config.numExpertPerToken);
+    }
+  }
+  if (laneId == 0) atomicAdd(args.combineGridBarrier, 1);
+
+  if (globalThdId == 0) {
+    shmem::ShmemUint32WaitUntilEquals(args.combineGridBarrier, globalWarpNum);
+    args.combineGridBarrier[0] = 0;
+    __hip_atomic_fetch_add(args.crossDeviceBarrierFlag, 1, __ATOMIC_RELEASE,
+                           __HIP_MEMORY_SCOPE_SYSTEM);
   }
 }
 

@@ -108,7 +108,8 @@ class EpDispatchCombineHandle {
 
   void LaunchDispatch(KernelType, int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0,
                       bool isAsync = false);
-  void LaunchCombine(KernelType, int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0);
+  void LaunchCombine(KernelType, int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0,
+                     bool isAsync = false);
   void LaunchReset(hipStream_t = 0);
 
   index_t GetCurRankNumToken() const { return curRankNumToken; }

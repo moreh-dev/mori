@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <thread>
+#include <vector>
 
 #include "mori/ops/dispatch_combine/common.hpp"
 #include "mori/ops/dispatch_combine/dispatch_combine.hpp"
@@ -42,11 +43,20 @@ size_t GetTokenSize(const mori::moe::EpDispatchCombineConfig& config, size_t dty
   return inputSize + weightSize + indicesSize + scalesSize;
 }
 
+template <typename T>
+std::vector<T> CumulativeSum(T* arr, size_t nelems) {
+  std::vector<T> cumsum(nelems);
+  T sum = 0;
+  std::transform(arr, arr + nelems, cumsum.begin(), [&sum](T x) { return sum += x; });
+  return cumsum;
+}
+
 }  // namespace
 
 namespace mori {
 namespace moe {
 
+constexpr int MaxNumGpuPerNode = 8;
 constexpr int ProxyStopCheckPeriod = 1000;
 constexpr int ProxyStartWarnPeriod = 1000;
 
@@ -102,6 +112,7 @@ void Proxy::Start() {
       if (IsEventSet(event, EventBitFlag::TriggerDispatch)) {
         TriggerDispatch();
       } else {
+        assert(event == EventBitFlag::TriggerCombine);
         TriggerCombine();
       }
     }
@@ -127,18 +138,23 @@ void Proxy::Stop() {
 void Proxy::TriggerDispatch() {
   const EpDispatchCombineConfig& config = handle_.config;
   size_t tokenSize = GetTokenSize(config, GetHipDataTypeSize(handle_.inputType));
-  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+  size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
   size_t maxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
   int myPe = config.rank;
   int npes = config.worldSize;
   MORI_OPS_INFO("[{}] Proxy::TriggerDispatch", myPe);
 
+  // Clear host token counts
+  std::vector<index_t> destTokenCounts(npes);
+  std::copy(hostTokenCounts.get(), hostTokenCounts.get() + npes, destTokenCounts.begin());
+  ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
+
   for (int destPe = 0; destPe < npes; ++destPe) {
     auto stream = streamPool.GetStream(destPe);
-    index_t destTokenCount = hostTokenCounts.get()[destPe];
+    index_t destTokenCount = destTokenCounts[destPe];
 
     // Send hidden states + weights + indices + scales to remote rank
-    size_t srcOffset = destPe * (maxNumTokensToSend * tokenSize);
+    size_t srcOffset = destPe * (maxNumTokensToSendPerRank * tokenSize);
     size_t destPeOffset = myPe * (maxNumTokensToRecvPerRank * tokenSize);
     void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
     void* dst = handle_.shmemDispatchInpTokMemObj->GetAs<char*>(destPe) + destPeOffset;
@@ -151,11 +167,43 @@ void Proxy::TriggerDispatch() {
     HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
                                      hipMemcpyDeviceToDeviceNoCU, stream));
   }
+  //::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
   // Clear host token counts
-  ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
 }
 
-void Proxy::TriggerCombine() { /* TODO(dongmin): Implement Trigger Combine */ }
+void Proxy::TriggerCombine() {
+  const EpDispatchCombineConfig& config = handle_.config;
+  int myPe = config.rank;
+  int npes = config.worldSize;
+  size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
+  MORI_OPS_INFO("[{}] Proxy::TriggerCombine", myPe);
+
+  size_t weightSize = handle_.weightsBuf ? sizeof(float) * config.numExpertPerToken : 0;
+  size_t hiddenSize = config.hiddenDim * GetHipDataTypeSize(handle_.inputType);
+  size_t stagingSize = hiddenSize + weightSize;
+  auto tokenCountPrefixSum = CumulativeSum(hostTokenCounts.get(), npes);
+  ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
+
+  for (int destPe = 0; destPe < npes; ++destPe) {
+    auto stream = streamPool.GetStream(destPe);
+
+    size_t destTokenStartIdx = destPe == 0 ? 0 : tokenCountPrefixSum[destPe - 1];
+    size_t destTokenCount = tokenCountPrefixSum[destPe] - destTokenStartIdx;
+
+    size_t srcOffset = destTokenStartIdx * stagingSize;
+    size_t destOffset = myPe * (maxNumTokensToSendPerRank * stagingSize);
+    void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
+    void* dst = handle_.shmemCombineInpTokMemObj->GetAs<char*>(destPe) + destOffset;
+    size_t nbytes = stagingSize * destTokenCount;
+    HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
+
+    // Send cross device barrier to dest rank
+    void* srcBarrier = handle_.crossDeviceBarrierMemObj->Get();
+    void* dstBarrier = handle_.crossDeviceBarrierMemObj->template GetAs<uint32_t*>(destPe) + myPe;
+    HIP_RUNTIME_CHECK(
+        hipMemcpyAsync(dstBarrier, srcBarrier, sizeof(uint32_t), hipMemcpyHostToDevice, stream));
+  }
+}
 
 bool Proxy::IsRunning() { return running.load(std::memory_order_acquire); }
 
