@@ -69,7 +69,10 @@ Proxy::Proxy(const EpDispatchCombineHandle& handle)
       running(false),
       threadStarted(false),
       hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.worldSize)),
-      streamPool(handle.config.worldSize) {}
+      hostSignal(gpuCallocHostUnique<uint8_t>()),
+      streamPool(handle.config.worldSize) {
+  AtomicStore(hostSignal.get(), (uint8_t)1, memoryOrderAcquire);
+}
 
 Proxy::~Proxy() {
   if (IsRunning()) {
@@ -166,6 +169,10 @@ void Proxy::TriggerDispatch() {
     void* tokenNumDst = handle_.recvTokenNumMemObj->GetAs<index_t*>(destPe) + myPe;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
                                      hipMemcpyDeviceToDeviceNoCU, stream));
+    // Send Signal
+    void* signalDst = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>(destPe) + myPe;
+    HIP_RUNTIME_CHECK(hipMemcpyAsync(signalDst, hostSignal.get(), sizeof(uint8_t),
+                                     hipMemcpyHostToDevice, stream));
   }
   //::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
   // Clear host token counts

@@ -42,7 +42,7 @@ class EpDispatchCombineTestCase:
                 [], dtype=torch.float8_e4m3fnuz
             ).element_size(),
             max_token_type_size=torch.tensor([], dtype=torch.float32).element_size(),
-            max_num_inp_token_per_rank=16,
+            max_num_inp_token_per_rank=4096,
             num_experts_per_rank=32,
             num_experts_per_token=8,
             use_external_inp_buf=False,
@@ -109,7 +109,7 @@ class EpDispatchCombineTestCase:
         # gen num_tokens
         # if self.config.rank < 4:
         if True:
-            num_tokens = 16
+            num_tokens = 4096
         else:
             num_tokens = int(
                 torch.randint(

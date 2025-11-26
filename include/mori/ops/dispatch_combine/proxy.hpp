@@ -53,6 +53,7 @@ class Proxy {
   std::atomic_bool threadStarted;
   std::thread service;
   UniqueGpuHostPtr<index_t> hostTokenCounts;
+  UniqueGpuHostPtr<uint8_t> hostSignal;
   StreamPool streamPool;
 };
 

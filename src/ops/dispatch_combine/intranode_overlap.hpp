@@ -185,12 +185,12 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
       // Wait until all tokens are sent
       shmem::ShmemUint32WaitUntilEquals(args.dispatchGridBarrier, globalWarpNum);
       args.dispatchGridBarrier[0] = 0;
-      index_t numTokenSignal = core::AtomicLoadRelaxed(args.destPeTokenCounter + destPe) + 1;
+      index_t numToken = core::AtomicLoadRelaxed(args.destPeTokenCounter + destPe);
       args.destPeTokenCounter[destPe] = 0;
       core::AtomicStoreRelaxedSystem(args.sendTokenNumMemObj->template GetAs<index_t*>() + destPe,
-                                     numTokenSignal);
+                                     numToken);
       // Store token counts to host buffer
-      args.hostTokenCounts[destPe] = numTokenSignal - 1;
+      args.hostTokenCounts[destPe] = numToken;
     }
     __threadfence_system();
     // send signal to cpu proxy
@@ -227,13 +227,15 @@ __global__ void EpDispatchIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> ar
 
   extern __shared__ index_t recvTokenNums[];
   if (warpId == 0) {
+    // Get num tokens
     index_t* recvTokenNumObj = args.recvTokenNumMemObj->template GetAs<index_t*>();
     for (int srcPe = laneId; srcPe < npes; srcPe += warpSize) {
-      index_t* signal = recvTokenNumObj + srcPe;
-      index_t recvTokenNum = shmem::ShmemInt32WaitUntilGreaterThan(signal, 0) - 1;
+      shmem::ShmemUint8WaitUntilGreaterThan(
+          args.sendAtomicSignalMemObj->template GetAs<uint8_t*>() + srcPe, 0);
+      index_t recvTokenNum = core::AtomicLoadRelaxedSystem(recvTokenNumObj + srcPe);
       recvTokenNums[srcPe] = recvTokenNum;
     }
-    if (thdId == 0) {
+    if (laneId == 0) {
       for (int i = 1; i < npes; ++i) {
         recvTokenNums[i] += recvTokenNums[i - 1];
       }
