@@ -25,6 +25,23 @@ import time
 
 import torch
 import torch.distributed as dist
+import pdb
+import sys
+
+
+class ForkedPdb(pdb.Pdb):
+    """A Pdb subclass that may be used
+    from a forked multiprocessing child
+
+    """
+
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open("/dev/stdin")
+            pdb.Pdb.interaction(self, *args, **kwargs)
+        finally:
+            sys.stdin = _stdin
 
 
 class EpDispatchCombineTestCase:
@@ -210,12 +227,6 @@ class EpDispatchCombineTestCase:
             scales_list,
             input_list,
         ) = test_data
-        """
-        import pdb
-        import sys
-        sys.stdin = open('/dev/stdin')
-        pdb.set_trace()
-        """
         rank_indices = [
             idx[:num_tokens] // self.config.num_experts_per_rank for idx in indices_list
         ]
@@ -308,12 +319,6 @@ class EpDispatchCombineTestCase:
             )[0]
         assert torch.equal(torch_dispatch_output_sorted, mori_dispatch_output_sorted)
         assert torch.equal(torch_dispatch_weight_sorted, mori_dispatch_weight_sorted)
-        """
-        import pdb
-        import sys
-        sys.stdin = open('/dev/stdin')
-        pdb.set_trace()
-        """
         assert torch.equal(torch_dispatch_indices_sorted, mori_dispatch_indices_sorted)
         if scales_list is not None and self.config.scale_dim != 0:
             assert torch.equal(
@@ -323,7 +328,6 @@ class EpDispatchCombineTestCase:
 
         if self.config.rank == 0:
             print("Dispatch Pass")
-        return
 
         combine_input = op.get_registered_combine_input_buffer(self.config.data_type)
         combine_input[:total_recv_num_token, :].copy_(
@@ -355,7 +359,6 @@ class EpDispatchCombineTestCase:
             got, expected = combine_output[i], input[i].to(torch.bfloat16) * unique_pes
 
             assert torch.allclose(got.float(), expected.float(), atol=1e-2, rtol=1e-2)
-
             got_weight, expected_weight = (
                 combine_output_weight[i],
                 weights[i] * unique_pes,

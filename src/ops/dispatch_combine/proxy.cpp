@@ -205,10 +205,10 @@ void Proxy::TriggerCombine() {
     HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
 
     // Send cross device barrier to dest rank
-    void* srcBarrier = handle_.crossDeviceBarrierMemObj->Get();
+    void* srcBarrier = handle_.crossDeviceBarrierMemObj->GetAs<uint32_t*>() + myPe;
     void* dstBarrier = handle_.crossDeviceBarrierMemObj->template GetAs<uint32_t*>(destPe) + myPe;
-    HIP_RUNTIME_CHECK(
-        hipMemcpyAsync(dstBarrier, srcBarrier, sizeof(uint32_t), hipMemcpyHostToDevice, stream));
+    HIP_RUNTIME_CHECK(hipMemcpyAsync(dstBarrier, srcBarrier, sizeof(uint32_t),
+                                     hipMemcpyDeviceToDeviceNoCU, stream));
   }
 }
 

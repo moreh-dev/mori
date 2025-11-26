@@ -65,7 +65,7 @@ inline __device__ void SetCrossDeviceBarrierAndSignalProxy(EpDispatchCombineArgs
     }
 
     // Signal Host proxy
-    index_t recvTokenNum = core::AtomicLoadRelaxed(recvTokenNumObj + globalThdId) - 1;
+    index_t recvTokenNum = core::AtomicLoadRelaxed(recvTokenNumObj + globalThdId);
     assert(recvTokenNum >= 0);
     args.hostTokenCounts[globalThdId] = recvTokenNum;
     __threadfence_system();
@@ -298,7 +298,6 @@ __global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> arg
   int globalWarpNum = gridDim.x * warpNum;
 
   const uint32_t crossDeviceBarrierFlag = args.crossDeviceBarrierFlag[0];
-  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
 
   index_t totalRecvTokenNum = args.totalRecvTokenNum[0];
 
@@ -318,7 +317,7 @@ __global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> arg
     if (args.weightsBuf) {
       size_t srcWeightOffset = i * weightSize;
       core::WarpCopy(
-          args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + weightSize,
+          args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + hiddenSize,
           reinterpret_cast<char*>(args.weightsBuf) + srcWeightOffset, weightSize);
     }
   }
@@ -330,6 +329,8 @@ __global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> arg
         args.sendTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
     core::AtomicStoreRelaxedSystem(
         args.recvTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
+    core::AtomicStoreRelaxedSystem(
+        args.sendAtomicSignalMemObj->template GetAs<index_t*>() + globalThdId, 0);
   }
 }
 
@@ -357,13 +358,17 @@ __global__ void EpCombineIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> arg
 
   index_t warpsPerToken = (globalWarpNum + args.curRankNumToken - 1) / args.curRankNumToken;
   index_t hiddenDimPerWarp = (config.hiddenDim + warpsPerToken - 1) / warpsPerToken;
-  size_t weightOffset = args.weightsBuf ? config.hiddenDim * sizeof(T) : 0;
-  size_t stagingOffset = weightOffset + sizeof(float) * config.numExpertPerToken;
-  size_t maxNumTokensToSend = config.MaxNumTokensToSend();
+
+  size_t weightSize = args.weightsBuf ? sizeof(float) * config.numExpertPerToken : 0;
+  size_t hiddenSize = config.hiddenDim * sizeof(T);
+  size_t stagingOffset = weightSize + hiddenSize;
+
+  size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
 
   // Wait cross device barrier
   WaitCrossDeviceBarrier(args, crossDeviceBarrierFlag);
   assert(config.numExpertPerToken < warpSize);
+
   for (int i = globalWarpId; i < (args.curRankNumToken * warpsPerToken); i += globalWarpNum) {
     index_t tokenId = i / warpsPerToken;
     index_t inTokenPartId = i % warpsPerToken;
@@ -374,15 +379,15 @@ __global__ void EpCombineIntraNodeOverlapRecvKernel(EpDispatchCombineArgs<T> arg
     // Prepare data pointers on different GPUs
     for (int j = laneId; j < config.numExpertPerToken; j += warpSize) {
       index_t destTokId = args.dispDestTokIdMap[tokenId * config.numExpertPerToken + j];
-      index_t destPe = destTokId / maxNumTokensToSend;
+      index_t destPe = destTokId / maxNumTokensToSendPerRank;
       index_t destTokOffset = destTokId * stagingOffset;
 
       if (destPe < config.worldSize) {
-        index_t destLocalTokId = destTokId - destPe * maxNumTokensToSend;
+        index_t destLocalTokId = destTokId - destPe * maxNumTokensToSendPerRank;
         srcPtrs[j] = reinterpret_cast<T*>(args.shmemCombineInpTokMemObj->template GetAs<char*>() +
                                           destTokOffset + hiddenDimOffset * sizeof(T));
         srcWeightsPtr[j] = reinterpret_cast<float*>(
-            args.shmemCombineInpTokMemObj->template GetAs<char*>() + destTokOffset + weightOffset);
+            args.shmemCombineInpTokMemObj->template GetAs<char*>() + destTokOffset + hiddenSize);
       } else {
         srcPtrs[j] = nullptr;
         srcWeightsPtr[j] = nullptr;
