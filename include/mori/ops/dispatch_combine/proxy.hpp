@@ -22,6 +22,7 @@
 #pragma once
 
 #include "mori/ops/dispatch_combine/common.hpp"
+#include "mori/ops/dispatch_combine/dma_transfer.hpp"
 #include "mori/ops/dispatch_combine/proxy_device.hpp"
 #include "mori/ops/dispatch_combine/utils.hpp"
 
@@ -54,6 +55,7 @@ class Proxy {
   std::thread service;
   UniqueGpuHostPtr<index_t> hostTokenCounts;
   UniqueGpuHostPtr<uint8_t> hostSignal;
+  std::unique_ptr<DmaTransferEngine> dmaTransferEngine;
   StreamPool streamPool;
 };
 

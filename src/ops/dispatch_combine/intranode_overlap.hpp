@@ -195,6 +195,9 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
     __threadfence_system();
     // send signal to cpu proxy
     if (laneId == 0) {
+      uint8_t val = 1;
+      core::AtomicStoreRelaxedSystem(args.sendAtomicSignalMemObj->template GetAs<uint8_t*>() + myPe,
+                                     val);
       args.proxyTrigger->SetEvent(EventBitFlag::TriggerDispatch);
     }
   }
@@ -330,7 +333,7 @@ __global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> arg
     core::AtomicStoreRelaxedSystem(
         args.recvTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
     core::AtomicStoreRelaxedSystem(
-        args.sendAtomicSignalMemObj->template GetAs<index_t*>() + globalThdId, 0);
+        args.sendAtomicSignalMemObj->template GetAs<uint8_t*>() + globalThdId, (uint8_t)0);
   }
 }
 

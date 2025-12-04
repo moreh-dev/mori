@@ -70,6 +70,7 @@ Proxy::Proxy(const EpDispatchCombineHandle& handle)
       threadStarted(false),
       hostTokenCounts(gpuCallocHostUnique<index_t>(handle.config.worldSize)),
       hostSignal(gpuCallocHostUnique<uint8_t>()),
+      dmaTransferEngine(std::make_unique<DmaTransferEngine>(handle.config.worldSize)),
       streamPool(handle.config.worldSize) {
   AtomicStore(hostSignal.get(), (uint8_t)1, memoryOrderAcquire);
 }
@@ -152,8 +153,8 @@ void Proxy::TriggerDispatch() {
   std::copy(hostTokenCounts.get(), hostTokenCounts.get() + npes, destTokenCounts.begin());
   ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
 
+  TransferTaskList transferTaskList;
   for (int destPe = 0; destPe < npes; ++destPe) {
-    auto stream = streamPool.GetStream(destPe);
     index_t destTokenCount = destTokenCounts[destPe];
 
     // Send hidden states + weights + indices + scales to remote rank
@@ -162,20 +163,44 @@ void Proxy::TriggerDispatch() {
     void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
     void* dst = handle_.shmemDispatchInpTokMemObj->GetAs<char*>(destPe) + destPeOffset;
     size_t nbytes = tokenSize * destTokenCount;
-    HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
+    transferTaskList.emplace_back(
+        std::move(dmaTransferEngine->CreateTransferTask(dst, src, nbytes, myPe, destPe)));
 
     // Send send token count to remote rank
     void* tokenNumSrc = handle_.sendTokenNumMemObj->GetAs<index_t*>() + destPe;
     void* tokenNumDst = handle_.recvTokenNumMemObj->GetAs<index_t*>(destPe) + myPe;
-    HIP_RUNTIME_CHECK(hipMemcpyAsync(tokenNumDst, tokenNumSrc, sizeof(index_t),
-                                     hipMemcpyDeviceToDeviceNoCU, stream));
+    transferTaskList.emplace_back(std::move(dmaTransferEngine->CreateTransferTask(
+        tokenNumDst, tokenNumSrc, sizeof(index_t), myPe, destPe)));
+
+    void* signalSrc = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>() + myPe;
+    void* signalDst = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>(destPe) + myPe;
+    transferTaskList.emplace_back(std::move(dmaTransferEngine->CreateTransferTask(
+        signalDst, signalSrc, sizeof(uint8_t), myPe, destPe, true)));
+  }
+  dmaTransferEngine->ExecuteDmaTransfer(transferTaskList);
+  // dmaTransferEngine->Cleanup();
+  /*
+  transferTaskList.clear();
+
+  for (int destPe = 0; destPe < npes; ++destPe) {
+    void* signalSrc = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>() + myPe;
+    void* signalDst = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>(destPe) + myPe;
+    transferTaskList.emplace_back(std::move(dmaTransferEngine->CreateTransferTask(signalDst,
+  signalSrc, sizeof(uint8_t), myPe, destPe, true)));
+  }
+  */
+
+  /*
+  for (int destPe = 0; destPe < npes; ++destPe) {
+    auto stream = streamPool.GetStream(destPe);
     // Send Signal
+    void* signalSrc = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>() + myPe;
     void* signalDst = handle_.sendAtomicSignalMemObj->GetAs<uint8_t*>(destPe) + myPe;
     HIP_RUNTIME_CHECK(hipMemcpyAsync(signalDst, hostSignal.get(), sizeof(uint8_t),
                                      hipMemcpyHostToDevice, stream));
   }
-  //::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
-  // Clear host token counts
+  dmaTransferEngine->CleanUp();
+  */
 }
 
 void Proxy::TriggerCombine() {
