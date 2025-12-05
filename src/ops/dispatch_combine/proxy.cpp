@@ -188,6 +188,7 @@ void Proxy::TriggerCombine() {
   auto tokenCountPrefixSum = CumulativeSum(hostTokenCounts.get(), npes);
   ::memset(hostTokenCounts.get(), 0, npes * sizeof(index_t));
 
+  TransferTaskList transferTaskList;
   for (int destPe = 0; destPe < npes; ++destPe) {
     auto stream = streamPool.GetStream(destPe);
 
@@ -199,14 +200,19 @@ void Proxy::TriggerCombine() {
     void* src = handle_.shmemStagingTokMemObj->GetAs<char*>() + srcOffset;
     void* dst = handle_.shmemCombineInpTokMemObj->GetAs<char*>(destPe) + destOffset;
     size_t nbytes = stagingSize * destTokenCount;
-    HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
+    transferTaskList.emplace_back(
+        std::move(dmaTransferEngine->CreateTransferTask(dst, src, nbytes, myPe, destPe)));
+    // HIP_RUNTIME_CHECK(hipMemcpyAsync(dst, src, nbytes, hipMemcpyDeviceToDeviceNoCU, stream));
 
     // Send cross device barrier to dest rank
     void* srcBarrier = handle_.crossDeviceBarrierMemObj->GetAs<uint32_t*>() + myPe;
     void* dstBarrier = handle_.crossDeviceBarrierMemObj->template GetAs<uint32_t*>(destPe) + myPe;
-    HIP_RUNTIME_CHECK(hipMemcpyAsync(dstBarrier, srcBarrier, sizeof(uint32_t),
-                                     hipMemcpyDeviceToDeviceNoCU, stream));
+    transferTaskList.emplace_back(std::move(dmaTransferEngine->CreateTransferTask(
+        dstBarrier, srcBarrier, sizeof(uint32_t), myPe, destPe, true)));
+    // HIP_RUNTIME_CHECK(hipMemcpyAsync(dstBarrier, srcBarrier, sizeof(uint32_t),
+    //                                  hipMemcpyDeviceToDeviceNoCU, stream));
   }
+  dmaTransferEngine->ExecuteDmaTransfer(transferTaskList);
 }
 
 bool Proxy::IsRunning() { return running.load(std::memory_order_acquire); }
