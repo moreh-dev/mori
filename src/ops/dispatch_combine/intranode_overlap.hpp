@@ -117,6 +117,7 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
   size_t stagingOffset = scalesOffset + config.scaleTypeSize * config.scaleDim;
 
   size_t maxNumTokensToSendPerRank = config.MaxNumTokensToSendPerRank();
+  size_t maxNumTokensToRecvPerRank = config.MaxNumTokensToRecvPerRank();
 
   if (args.tokenIndices && args.inpTokenBuf) {
     // Phase1: send token
@@ -146,34 +147,39 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
         args.dispDestTokIdMap[i] = destPe * maxNumTokensToSendPerRank + destTokId;
       }
       destTokId = __shfl(destTokId, 0);
-      index_t destTokOffset = (destPe * maxNumTokensToSendPerRank + destTokId) * stagingOffset;
       index_t srcTokOffset = srcTokId * size_t(config.hiddenDim) * sizeof(T);
+      index_t destTokOffset;
+      char* destBuffer;
+      if (destPe == myPe) {
+        destTokOffset = (destPe * maxNumTokensToRecvPerRank + destTokId) * stagingOffset;
+        destBuffer = args.shmemDispatchInpTokMemObj->template GetAs<char*>();
+      } else {
+        destTokOffset = (destPe * maxNumTokensToSendPerRank + destTokId) * stagingOffset;
+        destBuffer = args.shmemStagingTokMemObj->template GetAs<char*>();
+      }
 
       // Copy hidden states
-      core::WarpCopy(args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset,
+      core::WarpCopy(destBuffer + destTokOffset,
                      reinterpret_cast<char*>(args.inpTokenBuf) + srcTokOffset,
                      config.hiddenDim * sizeof(T));
       // Copy topk weights if exist
       if (args.weightsBuf) {
-        core::WarpCopy(
-            args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + weightOffset,
-            reinterpret_cast<char*>(args.weightsBuf) +
-                srcTokId * config.numExpertPerToken * sizeof(float),
-            config.numExpertPerToken * sizeof(float));
+        core::WarpCopy(destBuffer + destTokOffset + weightOffset,
+                       reinterpret_cast<char*>(args.weightsBuf) +
+                           srcTokId * config.numExpertPerToken * sizeof(float),
+                       config.numExpertPerToken * sizeof(float));
       }
       // Copy topk ids
-      core::WarpCopy(
-          args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + indicesOffset,
-          reinterpret_cast<char*>(args.tokenIndices) +
-              srcTokId * config.numExpertPerToken * sizeof(index_t),
-          config.numExpertPerToken * sizeof(index_t));
+      core::WarpCopy(destBuffer + destTokOffset + indicesOffset,
+                     reinterpret_cast<char*>(args.tokenIndices) +
+                         srcTokId * config.numExpertPerToken * sizeof(index_t),
+                     config.numExpertPerToken * sizeof(index_t));
       // Copy scales if exist
       if (args.scalesBuf && (config.scaleDim > 0) && (config.scaleTypeSize > 0)) {
         index_t srcScaleOffset = srcTokId * config.scaleDim * config.scaleTypeSize;
-        core::WarpCopy(
-            args.shmemStagingTokMemObj->template GetAs<char*>() + destTokOffset + scalesOffset,
-            reinterpret_cast<char*>(args.scalesBuf) + srcScaleOffset,
-            config.scaleDim * config.scaleTypeSize);
+        core::WarpCopy(destBuffer + destTokOffset + scalesOffset,
+                       reinterpret_cast<char*>(args.scalesBuf) + srcScaleOffset,
+                       config.scaleDim * config.scaleTypeSize);
       }
     }
   }
@@ -187,17 +193,16 @@ __global__ void EpDispatchIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> ar
       args.dispatchGridBarrier[0] = 0;
       index_t numToken = core::AtomicLoadRelaxed(args.destPeTokenCounter + destPe);
       args.destPeTokenCounter[destPe] = 0;
-      core::AtomicStoreRelaxedSystem(args.sendTokenNumMemObj->template GetAs<index_t*>() + destPe,
-                                     numToken);
+      core::AtomicStoreRelaxedSystem(
+          args.recvTokenNumMemObj->template GetAs<index_t*>(destPe) + myPe, numToken);
       // Store token counts to host buffer
       args.hostTokenCounts[destPe] = numToken;
     }
     __threadfence_system();
     // send signal to cpu proxy
     if (laneId == 0) {
-      uint8_t val = 1;
       core::AtomicStoreRelaxedSystem(args.sendAtomicSignalMemObj->template GetAs<uint8_t*>() + myPe,
-                                     val);
+                                     (uint8_t)1);
       args.proxyTrigger->SetEvent(EventBitFlag::TriggerDispatch);
     }
   }
@@ -328,8 +333,6 @@ __global__ void EpCombineIntraNodeOverlapSendKernel(EpDispatchCombineArgs<T> arg
   SetCrossDeviceBarrierAndSignalProxy(args, crossDeviceBarrierFlag);
   *args.totalRecvTokenNum = 0;
   if (globalThdId < npes) {
-    core::AtomicStoreRelaxedSystem(
-        args.sendTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
     core::AtomicStoreRelaxedSystem(
         args.recvTokenNumMemObj->template GetAs<index_t*>() + globalThdId, 0);
     core::AtomicStoreRelaxedSystem(
