@@ -132,7 +132,7 @@ LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
 std::tuple<torch::Tensor, std::optional<torch::Tensor>> LaunchCombine(
     mori::moe::EpDispatchCombineHandle& handle, int kernelType, const torch::Tensor& input,
     const std::optional<torch::Tensor>& weights, const torch::Tensor& topkIds, int blockNum,
-    int warpPerBlock) {
+    int warpPerBlock, bool doSend = true, bool doRecv = true) {
   assert(input.is_contiguous() && topkIds.is_contiguous());
 
   float* weightsPtr = nullptr;
@@ -140,12 +140,18 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> LaunchCombine(
     assert(weights->is_contiguous());
     weightsPtr = weights->data_ptr<float>();
   }
+  mori::moe::SendRecvMode mode = GetSendRecvMode(doSend, doRecv);
+  if (mode != mori::moe::SendRecvMode::SendRecv && !handle.proxy) {
+    throw std::runtime_error(
+        "Split send/recv operations are only supported for intra-node kernel that use a host "
+        "proxy");
+  }
 
   handle.PrepareInference(mori::ScalarTypeToHipDataType(input.scalar_type()), input.data_ptr(),
                           nullptr, weightsPtr, topkIds.data_ptr<mori::moe::index_t>(),
                           handle.curRankNumToken);
   handle.LaunchCombine((mori::moe::KernelType)kernelType, blockNum, warpPerBlock,
-                       at::cuda::getCurrentHIPStream(), handle.config.useHostProxy);
+                       at::cuda::getCurrentHIPStream(), handle.config.useHostProxy, mode);
 
   auto options = torch::TensorOptions().dtype(input.scalar_type()).device(torch::kCUDA);
   torch::Tensor out =

@@ -307,7 +307,7 @@ void EpDispatchCombineHandle::LaunchDispatch(KernelType kernelType, int blockNum
 }
 
 void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum, int warpPerBlock,
-                                            hipStream_t stream, bool isAsync) {
+                                            hipStream_t stream, bool isAsync, SendRecvMode mode) {
   size_t actualWarpNumPerBlock = (warpPerBlock <= 0) ? config.warpNumPerBlock : warpPerBlock;
   dim3 grid((blockNum <= 0) ? config.blockNum : blockNum);
   dim3 block(warpSize * actualWarpNumPerBlock);
@@ -329,10 +329,13 @@ void EpDispatchCombineHandle::LaunchCombine(KernelType kernelType, int blockNum,
           EpCombineInterNodeV1Kernel<<<grid, block, sharedMemSize, stream>>>(args);
         } else if (kernelType == KernelType::IntraNode) {
           if (isAsync) {
-            EpCombineIntraNodeOverlapSendKernel<DataT>
-                <<<grid, block, sharedMemSize, stream>>>(args);
-            EpCombineIntraNodeOverlapRecvKernel<DataT>
-                <<<grid, block, sharedMemSize, stream>>>(args);
+            if (mode == SendRecvMode::Send || mode == SendRecvMode::SendRecv) {
+              EpCombineIntraNodeOverlapSendKernel<DataT>
+                  <<<grid, block, sharedMemSize, stream>>>(args);
+            } else if (mode == SendRecvMode::Recv || mode == SendRecvMode::SendRecv) {
+              EpCombineIntraNodeOverlapRecvKernel<DataT>
+                  <<<grid, block, sharedMemSize, stream>>>(args);
+            }
           } else {
             EpCombineIntraNodeKernel<DataT><<<grid, block, sharedMemSize, stream>>>(args);
           }

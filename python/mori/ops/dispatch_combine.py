@@ -135,6 +135,8 @@ class EpDispatchCombineOp:
         block_num: int = -1,
         warp_per_block: int = -1,
         call_reset: bool = False,
+        do_send=True,
+        do_recv=True,
     ):
         output = self._combine_func(
             self._handle,
@@ -144,6 +146,8 @@ class EpDispatchCombineOp:
             indices,
             block_num,
             warp_per_block,
+            do_send,
+            do_recv,
         )
         if call_reset:
             self._reset_func(self._handle)

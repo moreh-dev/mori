@@ -52,8 +52,11 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
     def __init__(self, config, profile_dir=None):
         super().__init__(config)
         self.profile = profile_dir is not None
-        self.compute_stream = torch.cuda.Stream()
-
+        self.compute_stream = (
+            torch.cuda.Stream()
+            if not config.use_host_proxy
+            else torch.cuda.current_stream()
+        )
         if self.profile:
             self.profiler = torch.profiler.profile(
                 activities=[
@@ -99,24 +102,24 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
             all_rank_indices[self.config.rank],
             warp_per_block=16,
             do_send=True,
-            do_recv=False,
+            do_recv=False if self.config.use_host_proxy else True,
         )
 
         with torch.cuda.stream(self.compute_stream):
             _ = self.shared_experts(all_rank_input[self.config.rank])
-
         torch.cuda.current_stream().wait_stream(self.compute_stream)
 
-        _ = op.dispatch(
-            all_rank_input[self.config.rank],
-            all_rank_weights[self.config.rank],
-            # None,
-            all_rank_scales[self.config.rank],
-            all_rank_indices[self.config.rank],
-            warp_per_block=16,
-            do_send=False,
-            do_recv=True,
-        )
+        if self.config.use_host_proxy:
+            _ = op.dispatch(
+                all_rank_input[self.config.rank],
+                all_rank_weights[self.config.rank],
+                # None,
+                all_rank_scales[self.config.rank],
+                all_rank_indices[self.config.rank],
+                warp_per_block=16,
+                do_send=False,
+                do_recv=True,
+            )
 
         end_event.record()
         self.sync()
@@ -149,7 +152,26 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
             dispatch_indices,
             # block_num=128,
             warp_per_block=4,
+            do_send=True,
+            do_recv=False if self.config.use_host_proxy else True,
         )
+
+        with torch.cuda.stream(self.compute_stream):
+            _ = self.shared_experts(all_rank_input[self.config.rank])
+        torch.cuda.current_stream().wait_stream(self.compute_stream)
+
+        if self.config.use_host_proxy:
+            combine_output, _ = op.combine(
+                combine_input,
+                # dispatch_weights,
+                None,
+                dispatch_indices,
+                # block_num=128,
+                warp_per_block=4,
+                do_send=False,
+                do_recv=True,
+            )
+
         end_event.record()
         self.sync()
         comb_duration = start_event.elapsed_time(end_event)
@@ -252,89 +274,6 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
                     f"avg bytes(MB) {avg_total_bytes_MB_list[i]} bw {algo_bw} / {algo_bw*ll_mode_scale:.2f}"
                 )
 
-    def stress_once(self, op, test_data):
-        (
-            all_rank_num_token,
-            all_rank_indices,
-            all_rank_input,
-            all_rank_weights,
-            all_rank_scales,
-        ) = test_data
-
-        (
-            dispatch_output,
-            dispatch_weights,
-            dispatch_scales,
-            dispatch_indices,
-            dispatch_recv_num_token,
-        ) = op.dispatch(
-            all_rank_input[self.config.rank],
-            all_rank_weights[self.config.rank],
-            # None,
-            all_rank_scales[self.config.rank],
-            all_rank_indices[self.config.rank],
-            block_num=80,
-            warp_per_block=16,
-        )
-
-        combine_output, _ = op.combine(
-            dispatch_output,
-            None,
-            dispatch_indices,
-            block_num=80,
-            warp_per_block=16,
-        )
-        torch.cuda.synchronize()
-
-    def stress(self, op):
-        test_data_list = [self.gen_test_data() for i in range(5)]
-        for i in range(100):
-            if self.config.rank == 0:
-                print(f"Round {i} begin")
-            self.stress_once(op, test_data_list[i % 5])
-
-    def stress_graph(self, op):
-        test_data = self.gen_test_data()
-        g = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(g):
-            (
-                all_rank_num_token,
-                all_rank_indices,
-                all_rank_input,
-                all_rank_weights,
-                all_rank_scales,
-            ) = test_data
-
-            (
-                dispatch_output,
-                dispatch_weights,
-                dispatch_scales,
-                dispatch_indices,
-                dispatch_recv_num_token,
-            ) = op.dispatch(
-                all_rank_input[self.config.rank],
-                all_rank_weights[self.config.rank],
-                # None,
-                all_rank_scales[self.config.rank],
-                all_rank_indices[self.config.rank],
-                block_num=80,
-                warp_per_block=16,
-            )
-
-            combine_output, _ = op.combine(
-                dispatch_output,
-                None,
-                dispatch_indices,
-                block_num=80,
-                warp_per_block=16,
-            )
-        torch.cuda.synchronize()
-        for i in range(135):
-            if self.config.rank == 0:
-                print(f"Round {i} begin")
-            g.replay()
-            torch.cuda.synchronize()
-
 
 def _bench_dispatch_combine(
     rank,
@@ -343,6 +282,7 @@ def _bench_dispatch_combine(
     max_num_inp_token_per_rank=128,
     block_num=80,
     profile_dir=None,
+    use_proxy=True,
     data_type=torch.bfloat16,
     # data_type=torch.float8_e4m3fnuz,
     hidden_dim=7168,
@@ -365,7 +305,7 @@ def _bench_dispatch_combine(
         warp_num_per_block=16,
         block_num=block_num,
         use_external_inp_buf=True,
-        use_host_proxy=True,
+        use_host_proxy=use_proxy,
     )
     benchmark = EpDispatchCombineBenchmark(config, profile_dir)
 
@@ -373,20 +313,26 @@ def _bench_dispatch_combine(
         mori.shmem.shmem_torch_process_group_init("default")
         op = mori.ops.EpDispatchCombineOp(config)
         benchmark.run(op)
-        # benchmark.stress(op)
-        # benchmark.stress_graph(op)
-        # benchmark.output()
-        # mori.shmem.shmem_finalize()
 
 
 def bench_dispatch_combine(
-    max_num_inp_token_per_rank=4096, block_num=80, profile_dir=None
+    max_num_inp_token_per_rank=4096,
+    block_num=80,
+    profile_dir=None,
+    use_proxy=True,
 ):
     world_size = 8
     port = get_free_port()
     torch.multiprocessing.spawn(
         _bench_dispatch_combine,
-        args=(world_size, port, max_num_inp_token_per_rank, block_num, profile_dir),
+        args=(
+            world_size,
+            port,
+            max_num_inp_token_per_rank,
+            block_num,
+            profile_dir,
+            use_proxy,
+        ),
         nprocs=world_size,
         join=True,
     )
@@ -409,6 +355,11 @@ if __name__ == "__main__":
         help="The number of block_num (default: 80)",
     )
     parser.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="Whether to use host proxy",
+    )
+    parser.add_argument(
         "--profile-dir",
         type=str,
         default=None,
@@ -423,4 +374,5 @@ if __name__ == "__main__":
         max_num_inp_token_per_rank=args.max_tokens,
         block_num=args.block_num,
         profile_dir=args.profile_dir,
+        use_proxy=not args.no_proxy,
     )
