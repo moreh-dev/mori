@@ -111,6 +111,8 @@ class EpDispatchCombineOp:
         indices: torch.Tensor,
         block_num: int = -1,
         warp_per_block: int = -1,
+        do_send=True,
+        do_recv=True,
     ):
         return self._dispatch_func(
             self._handle,
@@ -121,6 +123,8 @@ class EpDispatchCombineOp:
             indices,
             block_num,
             warp_per_block,
+            do_send,
+            do_recv,
         )
 
     def combine(

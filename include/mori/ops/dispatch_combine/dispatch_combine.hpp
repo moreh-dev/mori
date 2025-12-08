@@ -39,6 +39,8 @@ enum KernelType {
   InterNodeV1LL = 3,
 };
 
+enum class SendRecvMode { SendRecv = 0, Send = 1, Recv = 2 };
+
 #define MAX_EXPERTS_PER_TOKEN (8)
 struct EpDispatchCombineConfig {
   int rank{0};
@@ -107,7 +109,7 @@ class EpDispatchCombineHandle {
   void LaunchInterNodeCombine(int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0);
 
   void LaunchDispatch(KernelType, int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0,
-                      bool isAsync = false);
+                      bool isAsync = false, SendRecvMode mode = SendRecvMode::SendRecv);
   void LaunchCombine(KernelType, int blockNum = -1, int warpPerBlock = -1, hipStream_t = 0,
                      bool isAsync = false);
   void LaunchReset(hipStream_t = 0);

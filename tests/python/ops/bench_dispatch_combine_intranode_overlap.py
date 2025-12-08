@@ -24,12 +24,35 @@ from tests.python.ops.test_dispatch_combine import EpDispatchCombineTestCase
 from tests.python.utils import TorchDistContext, get_free_port
 import torch
 import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SharedExperts(nn.Module):
+
+    def __init__(self, ffn_dim, hidden_dim, device, dtype=torch.bfloat16):
+        super().__init__()
+        self.ffn_dim = ffn_dim
+        self.gate_and_up_proj = torch.nn.Linear(
+            hidden_dim, ffn_dim * 2, bias=False, dtype=dtype, device=device
+        )
+        self.down_proj = torch.nn.Linear(
+            ffn_dim, hidden_dim, bias=False, dtype=dtype, device=device
+        )
+
+    def forward(self, hidden_states):
+        gate_up_output = self.gate_and_up_proj(hidden_states)
+        x = F.silu(
+            gate_up_output[..., : self.ffn_dim] * gate_up_output[..., self.ffn_dim :]
+        )
+        return self.down_proj(x)
 
 
 class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
     def __init__(self, config, profile_dir=None):
         super().__init__(config)
         self.profile = profile_dir is not None
+        self.compute_stream = torch.cuda.Stream()
 
         if self.profile:
             self.profiler = torch.profiler.profile(
@@ -41,6 +64,9 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
                     profile_dir, use_gzip=True
                 ),
             )
+        self.shared_experts = SharedExperts(
+            ffn_dim=2048, hidden_dim=7168, device=self.device
+        )
 
     def gen_test_data(self):
         return super().gen_test_data(use_max_token_num=True)
@@ -71,9 +97,27 @@ class EpDispatchCombineBenchmark(EpDispatchCombineTestCase):
             # None,
             all_rank_scales[self.config.rank],
             all_rank_indices[self.config.rank],
-            # block_num=304,
             warp_per_block=16,
+            do_send=True,
+            do_recv=False,
         )
+
+        with torch.cuda.stream(self.compute_stream):
+            _ = self.shared_experts(all_rank_input[self.config.rank])
+
+        torch.cuda.current_stream().wait_stream(self.compute_stream)
+
+        _ = op.dispatch(
+            all_rank_input[self.config.rank],
+            all_rank_weights[self.config.rank],
+            # None,
+            all_rank_scales[self.config.rank],
+            all_rank_indices[self.config.rank],
+            warp_per_block=16,
+            do_send=False,
+            do_recv=True,
+        )
+
         end_event.record()
         self.sync()
         disp_duration = start_event.elapsed_time(end_event)

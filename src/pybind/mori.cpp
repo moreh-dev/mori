@@ -43,12 +43,24 @@
 /* ---------------------------------------------------------------------------------------------- */
 namespace {
 
+mori::moe::SendRecvMode GetSendRecvMode(bool doSend, bool doRecv) {
+  if (doSend && doRecv) {
+    return mori::moe::SendRecvMode::SendRecv;
+  } else if (doSend) {
+    return mori::moe::SendRecvMode::Send;
+  } else if (doRecv) {
+    return mori::moe::SendRecvMode::Recv;
+  } else {
+    throw std::runtime_error("Invalid Send & Recv mode");
+  }
+}
+
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<torch::Tensor>, torch::Tensor,
            torch::Tensor>
 LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
                const torch::Tensor& input, const std::optional<torch::Tensor>& weights,
                const std::optional<torch::Tensor>& scales, const torch::Tensor& topkIds,
-               int blockNum = -1, int warpPerBlock = -1) {
+               int blockNum = -1, int warpPerBlock = -1, bool doSend = true, bool doRecv = true) {
   assert(input.is_contiguous() && topkIds.is_contiguous());
 
   float* weightPtr = nullptr;
@@ -66,12 +78,18 @@ LaunchDispatch(mori::moe::EpDispatchCombineHandle& handle, int kernelType,
   if (handle.proxy && !handle.proxy->IsRunning()) {
     handle.proxy->Start();
   }
+  mori::moe::SendRecvMode mode = GetSendRecvMode(doSend, doRecv);
+  if (mode != mori::moe::SendRecvMode::SendRecv && !handle.proxy) {
+    throw std::runtime_error(
+        "Split send/recv operations are only supported for intra-node kernel that use a host "
+        "proxy");
+  }
 
   handle.PrepareInference(mori::ScalarTypeToHipDataType(input.scalar_type()), input.data_ptr(),
                           nullptr, weightPtr, scalePtr, topkIds.data_ptr<mori::moe::index_t>(),
                           input.size(0));
   handle.LaunchDispatch((mori::moe::KernelType)kernelType, blockNum, warpPerBlock,
-                        at::cuda::getCurrentHIPStream(), handle.config.useHostProxy);
+                        at::cuda::getCurrentHIPStream(), handle.config.useHostProxy, mode);
 
   torch::Tensor out =
       torch::from_blob(handle.shmemDispatchOutTokMemObj->Get(),
